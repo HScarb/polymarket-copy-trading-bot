@@ -1,0 +1,11 @@
+[project]
+name = "polymarket-copy-trading-bot"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "polymarket-apis>=0.2.6",
+    "peewee>=3.17.0",
+    "psycopg2-binary>=2.9.9",
+    "pyyaml>=6.0.1",
+]

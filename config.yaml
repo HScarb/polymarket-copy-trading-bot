@@ -1,0 +1,15 @@
+database:
+  url: "postgresql://myuser:mypassword@localhost:5432/polymarket_bot"
+
+logging:
+  log_dir: "logs"  # 日志目录,相对于项目根目录
+  level: "INFO"  # 日志级别: DEBUG, INFO, WARNING, ERROR
+
+polymarket_api:
+  proxy: "http://localhost:7891"  # 可选,留空则不使用代理
+  timeout: 30.0
+
+monitoring:
+  wallets:
+    - "0x55be7aa03ecfbe37aa5460db791205f7ac9ddca3"
+  poll_interval_seconds: 60
