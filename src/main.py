@@ -25,8 +25,10 @@ def main():
 
         # 提取配置
         db_url = config['database']['url']
-        wallets = config['monitoring']['wallets']
-        poll_interval = config['monitoring']['poll_interval_seconds']
+        monitoring_config = config['monitoring']
+        wallets = monitoring_config['wallets']
+        poll_interval = monitoring_config['poll_interval_seconds']
+        batch_size = monitoring_config.get('batch_size', 500)
         api_config = config.get('polymarket_api', {})
         proxy = api_config.get('proxy')
         timeout = api_config.get('timeout', 30.0)
@@ -36,6 +38,7 @@ def main():
             wallets=wallets,
             poll_interval=poll_interval,
             db_url=db_url,
+            batch_size=batch_size,
             proxy=proxy,
             timeout=timeout
         )

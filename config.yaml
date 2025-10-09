@@ -13,3 +13,4 @@ monitoring:
   wallets:
     - "0x55be7aa03ecfbe37aa5460db791205f7ac9ddca3"
   poll_interval_seconds: 60
+  batch_size: 500  # 每次API调用获取的最大交易数量

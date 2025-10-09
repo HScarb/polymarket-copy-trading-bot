@@ -1,8 +1,10 @@
+from datetime import datetime
+from typing import Optional
 from urllib.parse import urlparse
 
 from peewee import IntegrityError
 
-from src.models import db, Trade
+from src.models import db, Trade, WalletCheckpoint
 
 
 class DatabaseHandler:
@@ -27,7 +29,7 @@ class DatabaseHandler:
         db.connect()
 
         # 创建表
-        db.create_tables([Trade], safe=True)
+        db.create_tables([Trade, WalletCheckpoint], safe=True)
 
     @staticmethod
     def save_trades(trades_data: list[dict]) -> int:
@@ -48,3 +50,30 @@ class DatabaseHandler:
                     continue
 
         return new_count
+
+    @staticmethod
+    def get_checkpoint(wallet_address: str) -> Optional[datetime]:
+        """获取钱包的最后同步时间戳"""
+        try:
+            checkpoint = WalletCheckpoint.get(WalletCheckpoint.wallet_address == wallet_address)
+            return checkpoint.last_synced_timestamp
+        except WalletCheckpoint.DoesNotExist:
+            return None
+
+    @staticmethod
+    def update_checkpoint(wallet_address: str, timestamp: datetime):
+        """更新钱包的同步检查点"""
+        now = datetime.now()
+
+        # 使用 INSERT ... ON CONFLICT UPDATE
+        WalletCheckpoint.insert(
+            wallet_address=wallet_address,
+            last_synced_timestamp=timestamp,
+            updated_at=now
+        ).on_conflict(
+            conflict_target=[WalletCheckpoint.wallet_address],
+            update={
+                WalletCheckpoint.last_synced_timestamp: timestamp,
+                WalletCheckpoint.updated_at: now
+            }
+        ).execute()

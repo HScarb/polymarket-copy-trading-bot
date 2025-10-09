@@ -58,9 +58,17 @@ flowchart TD
 2.  使用加载的配置实例化 `WalletMonitor` 类，该类在初始化时会创建一个 `PolymarketDataClient` 实例。
 3.  `WalletMonitor` 调用其 `start()` 方法，该方法会启动内部的线程池，并为钱包列表中的每个地址提交一个永久运行的监控任务。
 4.  每个监控任务在一个独立的线程中，按照预设的时间间隔（`poll_interval_seconds`）被周期性触发。
-5.  任务触发时，使用 `PolymarketDataClient` 实例调用 `get_activity(user=wallet_address, type="TRADE")` 获取对应钱包的最新交易活动列表。
-6.  获取数据后，任务调用 `DatabaseHandler` 将这批交易数据传入。`DatabaseHandler` 负责比对数据库，只将新的、未记录的交易（通过`transaction_hash`唯一标识）存入数据库。
-7.  记录本次轮询的结果（如发现N条新交易），完成一次监控循环，然后线程休眠，等待下一次触发。
+5.  **任务执行流程**（含分页和断点续传）:
+    - a. 从数据库读取该钱包的 `last_synced_timestamp` 检查点
+    - b. 进入分页循环:
+      - 调用 `get_activity(after=checkpoint, limit=batch_size)` 获取一批交易（最多500条）
+      - 如果返回数据为空，跳出循环
+      - 转换数据为字典格式，调用 `DatabaseHandler.save_trades()` 批量保存
+      - 立即更新 checkpoint 为本批次最新的时间戳
+      - 如果返回数据少于 `batch_size`，说明已追上最新，跳出循环
+      - 否则继续下一批
+    - c. 记录本轮轮询统计信息
+6.  完成一次完整的同步循环后，线程休眠，等待下一次触发。
 
 ## 3. 数据模型/API设计
 
@@ -77,6 +85,7 @@ monitoring:
     - "0x..."
     - "0x..."
   poll_interval_seconds: 60
+  batch_size: 500  # 每次API调用获取的最大交易数量
 ```
 
 **交易数据模型 (`Trade`)**
@@ -94,7 +103,21 @@ classDiagram
         +Decimal price
         +DateTime timestamp
     }
+
+    class WalletCheckpoint {
+        <<Model>>
+        +String wallet_address PK
+        +DateTime last_synced_timestamp
+        +DateTime updated_at
+    }
 ```
+
+**检查点数据模型 (`WalletCheckpoint`)**
+用于记录每个钱包的同步进度，支持断点续传和宕机恢复。
+
+- `wallet_address`: 钱包地址（主键）
+- `last_synced_timestamp`: 最后一条已同步交易的时间戳
+- `updated_at`: 检查点更新时间
 
 ### 3.2 API 设计
 
@@ -133,22 +156,55 @@ class DatabaseHandler:
     def save_trades(trades_data: list[dict]) -> int:
         """保存一批交易数据，返回新插入的记录数"""
         pass
+
+    @staticmethod
+    def get_checkpoint(wallet_address: str) -> Optional[datetime]:
+        """获取钱包的最后同步时间戳"""
+        pass
+
+    @staticmethod
+    def update_checkpoint(wallet_address: str, timestamp: datetime):
+        """更新钱包的同步检查点"""
+        pass
 ```
 
 ## 4. 详细设计
 
 ### 4.1 流程/模块一：钱包监控 (`WalletMonitor`)
 
-`WalletMonitor` 是整个模块的“大脑”。其 `__init__` 方法接收配置参数，创建一个 `PolymarketDataClient` 实例，一个 `concurrent.futures.ThreadPoolExecutor` 实例，以及一个用于优雅停止的 `threading.Event`。
+`WalletMonitor` 是整个模块的"大脑"。其 `__init__` 方法接收配置参数，创建一个 `PolymarketDataClient` 实例，一个 `concurrent.futures.ThreadPoolExecutor` 实例，以及一个用于优雅停止的 `threading.Event`。
 
 `start` 方法会遍历钱包列表，为每个钱包地址向线程池提交一个 `_monitor_wallet` 任务。
 
 核心的私有方法 `_monitor_wallet` 是一个无限循环。在循环的每一次迭代中，它会：
-1.  调用 `self.data_client.get_activity()` 获取数据。
-2.  将返回的 `Activity` 对象列表转换为适合存入数据库的字典列表。
-3.  调用 `DatabaseHandler.save_trades()` 保存数据。
-4.  调用 `Logger` 记录信息。
-5.  使用 `self.stop_event.wait(self.poll_interval)` 来实现定时和可中断的等待。
+
+1.  **加载检查点**: 从数据库获取该钱包的 `last_synced_timestamp`，如果不存在则从最早的交易开始。
+2.  **分页获取数据**:
+    - 使用 `get_activity()` 获取最多 `batch_size`（默认500条）交易记录
+    - 通过 `before` 参数指定获取早于某个时间戳的交易（从旧到新拉取）
+    - API返回结果按时间倒序排列（新→旧）
+3.  **批次处理循环**:
+    ```python
+    while True:
+        # 获取一批数据
+        activities = get_activity(after=last_checkpoint, limit=batch_size)
+        if not activities:
+            break  # 没有更多数据
+
+        # 转换并保存
+        trades = convert_to_trades(activities)
+        save_trades(trades)
+
+        # 更新检查点为本批次中最新的时间戳
+        latest_timestamp = max(trade['timestamp'] for trade in trades)
+        update_checkpoint(wallet_address, latest_timestamp)
+
+        # 如果返回数据少于 batch_size，说明已到达最新
+        if len(activities) < batch_size:
+            break
+    ```
+4.  **断点续传保障**: 每次批量保存后立即更新 checkpoint，确保宕机后从上次成功位置继续。
+5.  **休眠等待**: 使用 `self.stop_event.wait(self.poll_interval)` 实现定时和可中断的等待。
 
 **交互时序图**
 ```mermaid
@@ -159,22 +215,105 @@ sequenceDiagram
     participant Logger
 
     loop 定时轮询
-        Monitor->>SDK: get_activity(user=wallet_address, type="TRADE")
-        activate SDK
-        SDK-->>Monitor: [activity1, activity2, ...]
-        deactivate SDK
-
-        Monitor->>Monitor: 转换 Activity 对象为字典
-        Monitor->>DB: save_trades(trade_list)
+        Monitor->>DB: get_checkpoint(wallet_address)
         activate DB
-        Note right of DB: 在单个事务中<br/>批量插入新交易<br/>(on_conflict_ignore)
-        DB-->>Monitor: num_new_trades
+        DB-->>Monitor: last_synced_timestamp (or None)
         deactivate DB
 
-        alt num_new_trades > 0
-            Monitor->>Logger: log.info("Saved X new trades")
-        else
-            Monitor->>Logger: log.debug("No new trades")
+        loop 分页获取直到最新
+            Monitor->>SDK: get_activity(after=checkpoint, limit=batch_size)
+            activate SDK
+            SDK-->>Monitor: [activity1, ..., activityN] (最多500条)
+            deactivate SDK
+
+            alt 有数据返回
+                Monitor->>Monitor: 转换 Activity 对象为字典
+                Monitor->>DB: save_trades(trade_list)
+                activate DB
+                Note right of DB: 批量插入新交易<br/>(on_conflict_ignore)
+                DB-->>Monitor: num_new_trades
+                deactivate DB
+
+                Monitor->>DB: update_checkpoint(wallet, latest_timestamp)
+                activate DB
+                DB-->>Monitor: success
+                deactivate DB
+
+                Monitor->>Logger: log.info("保存 X 条新交易")
+
+                alt 返回数据 < batch_size
+                    Note over Monitor: 已达最新,退出分页循环
+                end
+            else 无数据
+                Monitor->>Logger: log.debug("无新交易")
+                Note over Monitor: 退出分页循环
+            end
         end
+
+        Note over Monitor: 等待 poll_interval 秒
     end
 ```
+
+### 4.2 断点续传与分页机制
+
+**问题背景**:
+- Polymarket API 的 `get_activity()` 默认最多返回100条记录
+- 活跃钱包的历史交易可能有数千条甚至更多
+- 系统需要支持从任意位置恢复同步（宕机恢复）
+
+**解决方案**:
+
+#### 4.2.1 检查点机制
+
+使用 `WalletCheckpoint` 表记录每个钱包的同步进度：
+- 首次同步时 `last_synced_timestamp` 为 `NULL`，从最早的交易开始获取
+- 每批次成功保存后，立即更新为本批次中最新交易的时间戳
+- 宕机重启后，从上次成功的 checkpoint 继续
+
+#### 4.2.2 分页获取策略
+
+**从旧到新拉取**：
+```python
+# 伪代码
+checkpoint = get_checkpoint(wallet) or datetime(1970, 1, 1)
+
+while True:
+    # 获取 checkpoint 之后的交易，最多 batch_size 条
+    activities = get_activity(
+        user=wallet,
+        type="TRADE",
+        after=checkpoint,  # 时间戳或序号，只获取晚于此点的交易
+        limit=batch_size   # 500条
+    )
+
+    if not activities:
+        break  # 已同步到最新
+
+    # 保存本批次
+    save_trades(activities)
+
+    # 更新检查点
+    latest_ts = max(a.timestamp for a in activities)
+    update_checkpoint(wallet, latest_ts)
+
+    # 判断是否已到最新
+    if len(activities) < batch_size:
+        break  # 返回少于 batch_size，说明没有更多数据
+```
+
+**关键参数**:
+- `after`: 指定起始时间戳，只返回晚于此时间的交易
+- `limit`: 每次最多返回的记录数（建议500）
+- 如果 API 不支持 `after` 参数，使用 `before` 配合倒序遍历
+
+#### 4.2.3 异常处理
+
+- **API调用失败**: 不更新 checkpoint，下次重试从上次成功位置继续
+- **数据库写入失败**: 事务回滚，checkpoint 不更新
+- **部分成功**: 使用数据库事务确保 trades 和 checkpoint 的原子性更新
+
+#### 4.2.4 性能优化
+
+- **并发控制**: 每个钱包独立线程，互不阻塞
+- **批量插入**: 使用 `INSERT ... ON CONFLICT IGNORE` 避免重复
+- **索引优化**: 在 `transaction_hash` 和 `wallet_address + timestamp` 上建立索引

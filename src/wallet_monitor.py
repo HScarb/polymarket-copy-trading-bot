@@ -13,10 +13,11 @@ from src.logger import log
 class WalletMonitor:
     """钱包监控器核心类"""
 
-    def __init__(self, wallets: list[str], poll_interval: int, db_url: str, proxy: Optional[str] = None, timeout: float = 30.0):
+    def __init__(self, wallets: list[str], poll_interval: int, db_url: str, batch_size: int = 500, proxy: Optional[str] = None, timeout: float = 30.0):
         """初始化监控器,配置钱包、轮询间隔和数据库"""
         self.wallets = wallets
         self.poll_interval = poll_interval
+        self.batch_size = batch_size
         self.data_client = PolymarketDataClient()
 
         # 配置 API 客户端
@@ -61,20 +62,64 @@ class WalletMonitor:
 
         while not self.stop_event.is_set():
             try:
-                # 获取钱包交易活动
-                activities = self.data_client.get_activity(
-                    user=wallet_address,
-                    type="TRADE"
-                )
+                total_new_trades = 0
 
-                # 转换为数据库格式
-                trades_data = self._convert_activities_to_trades(activities, wallet_address)
+                # 获取检查点
+                checkpoint = DatabaseHandler.get_checkpoint(wallet_address)
+                if checkpoint:
+                    log.debug(f"钱包 {wallet_address}: 从检查点 {checkpoint} 继续同步")
+                else:
+                    log.info(f"钱包 {wallet_address}: 首次同步，从最早的交易开始")
 
-                # 保存到数据库
-                new_count = DatabaseHandler.save_trades(trades_data)
+                # 分页获取数据
+                while True:
+                    # 构建请求参数
+                    params = {
+                        "user": wallet_address,
+                        "type": "TRADE",
+                        "limit": self.batch_size
+                    }
 
-                if new_count > 0:
-                    log.info(f"钱包 {wallet_address}: 发现并保存了 {new_count} 条新交易")
+                    # 如果有检查点，只获取晚于检查点的数据
+                    if checkpoint:
+                        # 将 datetime 转换为 Unix 时间戳（秒）
+                        params["after"] = int(checkpoint.timestamp())
+
+                    # 获取一批交易活动
+                    activities = self.data_client.get_activity(**params)
+
+                    # 如果没有数据，退出分页循环
+                    if not activities:
+                        log.debug(f"钱包 {wallet_address}: 已同步到最新")
+                        break
+
+                    # 转换为数据库格式
+                    trades_data = self._convert_activities_to_trades(activities, wallet_address)
+
+                    if not trades_data:
+                        log.debug(f"钱包 {wallet_address}: 本批次无有效交易")
+                        break
+
+                    # 保存到数据库
+                    new_count = DatabaseHandler.save_trades(trades_data)
+                    total_new_trades += new_count
+
+                    # 更新检查点为本批次最新的时间戳
+                    latest_timestamp = max(trade['timestamp'] for trade in trades_data)
+                    DatabaseHandler.update_checkpoint(wallet_address, latest_timestamp)
+
+                    log.info(f"钱包 {wallet_address}: 本批次保存 {new_count} 条新交易，最新时间戳: {latest_timestamp}")
+
+                    # 如果返回数据少于 batch_size，说明已到达最新
+                    if len(activities) < self.batch_size:
+                        log.debug(f"钱包 {wallet_address}: 已追上最新交易（本批次 {len(activities)} < {self.batch_size}）")
+                        break
+
+                    # 更新检查点用于下一次循环
+                    checkpoint = latest_timestamp
+
+                if total_new_trades > 0:
+                    log.info(f"钱包 {wallet_address}: 本轮共保存 {total_new_trades} 条新交易")
                 else:
                     log.debug(f"钱包 {wallet_address}: 没有新交易")
 

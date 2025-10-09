@@ -18,3 +18,14 @@ class Trade(Model):
     class Meta:
         database = db
         table_name = 'trades'
+
+
+class WalletCheckpoint(Model):
+    """钱包同步检查点模型"""
+    wallet_address = CharField(primary_key=True, max_length=255)
+    last_synced_timestamp = DateTimeField(null=True, index=True)
+    updated_at = DateTimeField(index=True)
+
+    class Meta:
+        database = db
+        table_name = 'wallet_checkpoints'
