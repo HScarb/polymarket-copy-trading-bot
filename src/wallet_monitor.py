@@ -1,23 +1,38 @@
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import httpx
 from polymarket_apis.clients.data_client import PolymarketDataClient
 
-from src.database_handler import DatabaseHandler
+from src.activity_queue import ActivityQueue
 from src.logger import log
+
+# 定义东八区时区
+TIMEZONE_UTC8 = ZoneInfo("Asia/Shanghai")
 
 
 class WalletMonitor:
     """钱包监控器核心类"""
 
-    def __init__(self, wallets: list[str], poll_interval: int, db_url: str, batch_size: int = 500, proxy: Optional[str] = None, timeout: float = 30.0):
-        """初始化监控器,配置钱包、轮询间隔和数据库"""
+    def __init__(self, wallets: list[str], poll_interval: int, activity_queue: ActivityQueue, batch_size: int = 500, proxy: Optional[str] = None, timeout: float = 30.0):
+        """
+        初始化监控器,配置钱包、轮询间隔和消息队列
+
+        Args:
+            wallets: 要监控的钱包地址列表
+            poll_interval: 轮询间隔（秒）
+            activity_queue: 活动队列实例
+            batch_size: 每次获取的最大活动数量
+            proxy: 代理服务器地址（可选）
+            timeout: API 超时时间（秒）
+        """
         self.wallets = wallets
         self.poll_interval = poll_interval
         self.batch_size = batch_size
+        self.activity_queue = activity_queue
         self.data_client = PolymarketDataClient()
 
         # 配置 API 客户端
@@ -29,9 +44,7 @@ class WalletMonitor:
         self.stop_event = threading.Event()
         self.executor: Optional[ThreadPoolExecutor] = None
 
-        # 初始化数据库
-        DatabaseHandler.initialize_database(db_url)
-        log.info(f"数据库已初始化: {db_url}")
+        log.info(f"WalletMonitor 已初始化，监控 {len(wallets)} 个钱包")
 
     def start(self):
         """启动所有监控任务和线程池"""
@@ -57,35 +70,38 @@ class WalletMonitor:
         log.info("监控已停止")
 
     def _monitor_wallet(self, wallet_address: str):
-        """监控单个钱包的私有方法"""
+        """
+        监控单个钱包的私有方法
+
+        使用当前时间早1小时（东八区）作为检查点（checkpoint），获取最近1小时及之后的活动
+        """
         log.info(f"开始监控钱包: {wallet_address}")
+
+        # 设置检查点为当前时间（东八区）
+        current_time = datetime.now(TIMEZONE_UTC8)
+        checkpoint = current_time #- timedelta(hours=1)
+        log.info(f"钱包 {wallet_address}: 设置检查点为 {checkpoint}（东八区），监控此时间之后的活动")
 
         while not self.stop_event.is_set():
             try:
-                total_new_trades = 0
-
-                # 获取检查点
-                checkpoint = DatabaseHandler.get_checkpoint(wallet_address)
-                if checkpoint:
-                    log.debug(f"钱包 {wallet_address}: 从检查点 {checkpoint} 继续同步")
-                else:
-                    log.info(f"钱包 {wallet_address}: 首次同步，从最早的交易开始")
+                total_activities = 0
+                offset = 0
 
                 # 分页获取数据
                 while True:
-                    # 构建请求参数
+                    # 构建请求参数 - 获取检查点之后的所有类型活动
                     params = {
                         "user": wallet_address,
-                        "type": "TRADE",
-                        "limit": self.batch_size
+                        # "start": checkpoint,  # 使用 start 参数而非 after
+                        "start": 1760110965000,  # 使用 start 参数而非 after
+                        "limit": self.batch_size,
+                        "offset": offset,
+                        "sort_by": "TIMESTAMP",
+                        "sort_direction": "ASC"  # 从旧到新排序，便于更新检查点
                     }
+                    # 不指定 type 参数，获取所有类型的活动（TRADE, SPLIT, MERGE, REDEEM, REWARD, CONVERSION）
 
-                    # 如果有检查点，只获取晚于检查点的数据
-                    if checkpoint:
-                        # 将 datetime 转换为 Unix 时间戳（秒）
-                        params["after"] = int(checkpoint.timestamp())
-
-                    # 获取一批交易活动
+                    # 获取一批活动
                     activities = self.data_client.get_activity(**params)
 
                     # 如果没有数据，退出分页循环
@@ -93,79 +109,82 @@ class WalletMonitor:
                         log.debug(f"钱包 {wallet_address}: 已同步到最新")
                         break
 
-                    # 转换为数据库格式
-                    trades_data = self._convert_activities_to_trades(activities, wallet_address)
+                    # 将活动推送到消息队列
+                    self.activity_queue.enqueue(wallet_address, activities)
+                    total_activities += len(activities)
 
-                    if not trades_data:
-                        log.debug(f"钱包 {wallet_address}: 本批次无有效交易")
-                        break
-
-                    # 保存到数据库
-                    new_count = DatabaseHandler.save_trades(trades_data)
-                    total_new_trades += new_count
-
-                    # 更新检查点为本批次最新的时间戳
-                    latest_timestamp = max(trade['timestamp'] for trade in trades_data)
-                    DatabaseHandler.update_checkpoint(wallet_address, latest_timestamp)
-
-                    log.info(f"钱包 {wallet_address}: 本批次保存 {new_count} 条新交易，最新时间戳: {latest_timestamp}")
+                    # 更新检查点为本批次最新的活动时间
+                    latest_timestamp = self._get_latest_timestamp(activities)
+                    if latest_timestamp:
+                        checkpoint = latest_timestamp
+                        log.debug(f"钱包 {wallet_address}: 更新检查点为 {checkpoint}")
 
                     # 如果返回数据少于 batch_size，说明已到达最新
                     if len(activities) < self.batch_size:
-                        log.debug(f"钱包 {wallet_address}: 已追上最新交易（本批次 {len(activities)} < {self.batch_size}）")
+                        log.debug(f"钱包 {wallet_address}: 已追上最新活动（本批次 {len(activities)} < {self.batch_size}）")
                         break
 
-                    # 更新检查点用于下一次循环
-                    checkpoint = latest_timestamp
+                    # 更新 offset 用于下一次分页
+                    offset += len(activities)
 
-                if total_new_trades > 0:
-                    log.info(f"钱包 {wallet_address}: 本轮共保存 {total_new_trades} 条新交易")
+                if total_activities > 0:
+                    log.info(f"钱包 {wallet_address}: 本轮共发现 {total_activities} 条新活动")
                 else:
-                    log.debug(f"钱包 {wallet_address}: 没有新交易")
+                    log.debug(f"钱包 {wallet_address}: 没有新活动")
 
             except Exception as e:
-                log.error(f"监控钱包 {wallet_address} 时出错: {e}")
+                log.error(f"监控钱包 {wallet_address} 时出错: {e}", exc_info=True)
 
             # 等待下一次轮询
             self.stop_event.wait(self.poll_interval)
 
-    def _convert_activities_to_trades(self, activities: list, wallet_address: str) -> list[dict]:
-        """将 Activity 对象列表转换为适合存入数据库的字典列表"""
-        trades_data = []
+    def _get_latest_timestamp(self, activities: list) -> Optional[datetime]:
+        """
+        从活动列表中获取最新的时间戳
 
-        for activity in activities:
-            try:
-                # 根据 polymarket_apis 的 Activity 结构提取字段
-                trade = {
-                    'transaction_hash': getattr(activity, 'transaction_hash', None),
-                    'wallet_address': wallet_address,
-                    'market_id': getattr(activity, 'condition_id', None),
-                    'outcome': getattr(activity, 'outcome', None),
-                    'amount': str(getattr(activity, 'size', 0)),
-                    'price': str(getattr(activity, 'price', 0)),
-                    'timestamp': self._parse_timestamp(getattr(activity, 'timestamp', None))
-                }
+        Args:
+            activities: 活动对象列表
 
-                # 确保所有必需字段都存在
-                if trade['transaction_hash'] and trade['market_id']:
-                    trades_data.append(trade)
+        Returns:
+            最新的时间戳，如果无法解析则返回 None
+        """
+        if not activities:
+            return None
 
-            except Exception as e:
-                log.warning(f"转换活动数据时出错: {e}, 活动数据: {activity}")
-                continue
+        try:
+            timestamps = []
+            for activity in activities:
+                ts = getattr(activity, 'timestamp', None)
+                if ts:
+                    parsed_ts = self._parse_timestamp(ts)
+                    if parsed_ts:
+                        timestamps.append(parsed_ts)
 
-        return trades_data
+            return max(timestamps) if timestamps else None
+        except Exception as e:
+            log.warning(f"获取最新时间戳时出错: {e}")
+            return None
 
     @staticmethod
-    def _parse_timestamp(ts) -> datetime:
-        """解析时间戳为 datetime 对象"""
-        if isinstance(ts, datetime):
-            return ts
-        elif isinstance(ts, str):
-            # 尝试解析 ISO 格式
-            return datetime.fromisoformat(ts.replace('Z', '+00:00'))
-        elif isinstance(ts, (int, float)):
-            # Unix 时间戳
-            return datetime.fromtimestamp(ts)
-        else:
-            return datetime.now()
+    def _parse_timestamp(ts) -> Optional[datetime]:
+        """
+        解析时间戳为 datetime 对象
+
+        Args:
+            ts: 时间戳（可以是 datetime、字符串或数字）
+
+        Returns:
+            解析后的 datetime 对象，失败则返回 None
+        """
+        try:
+            if isinstance(ts, datetime):
+                return ts
+            elif isinstance(ts, str):
+                # 尝试解析 ISO 格式
+                return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+            elif isinstance(ts, (int, float)):
+                # Unix 时间戳
+                return datetime.fromtimestamp(ts)
+        except Exception as e:
+            log.warning(f"解析时间戳失败: {ts}, 错误: {e}")
+        return None

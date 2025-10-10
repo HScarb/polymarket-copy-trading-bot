@@ -1,5 +1,5 @@
 database:
-  url: "postgresql://myuser:mypassword@localhost:5432/polymarket_bot"
+  url: "postgresql://myuser:mypassword@localhost:5432/polymarket_bot"  # 保留用于其他功能
 
 logging:
   log_dir: "logs"  # 日志目录,相对于项目根目录
@@ -12,5 +12,17 @@ polymarket_api:
 monitoring:
   wallets:
     - "0x55be7aa03ecfbe37aa5460db791205f7ac9ddca3"
-  poll_interval_seconds: 60
-  batch_size: 500  # 每次API调用获取的最大交易数量
+  poll_interval_seconds: 5
+  batch_size: 100  # 每次API调用获取的最大交易数量
+
+# 消息队列配置
+queue:
+  type: "memory"  # 可选: "memory" 或 "rabbitmq"
+  memory:
+    max_workers: 10  # 回调执行的最大线程数
+  rabbitmq:
+    host: "localhost"
+    port: 5672
+    username: "guest"
+    password: "guest"
+    exchange: "polymarket_activities"
