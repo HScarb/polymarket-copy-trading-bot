@@ -2,7 +2,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 import httpx
 from polymarket_apis.clients.data_client import PolymarketDataClient
@@ -10,8 +9,8 @@ from polymarket_apis.clients.data_client import PolymarketDataClient
 from src.activity_queue import ActivityQueue
 from src.logger import log
 
-# 定义东八区时区
-TIMEZONE_UTC8 = ZoneInfo("Asia/Shanghai")
+# 定义东八区时区（UTC+8）
+TIMEZONE_UTC8 = timezone(timedelta(hours=8))
 
 
 class WalletMonitor:
@@ -73,13 +72,12 @@ class WalletMonitor:
         """
         监控单个钱包的私有方法
 
-        使用当前时间早1小时（东八区）作为检查点（checkpoint），获取最近1小时及之后的活动
+        使用当前时间（东八区）作为检查点（checkpoint），只获取此时间之后的新活动
         """
         log.info(f"开始监控钱包: {wallet_address}")
 
         # 设置检查点为当前时间（东八区）
-        current_time = datetime.now(TIMEZONE_UTC8)
-        checkpoint = current_time #- timedelta(hours=1)
+        checkpoint = datetime.now(TIMEZONE_UTC8)
         log.info(f"钱包 {wallet_address}: 设置检查点为 {checkpoint}（东八区），监控此时间之后的活动")
 
         while not self.stop_event.is_set():
@@ -89,11 +87,15 @@ class WalletMonitor:
 
                 # 分页获取数据
                 while True:
+                    # 设置查询结束时间为当前时间 + 1小时，防止间隔太小查不到数据
+                    current_time = datetime.now(TIMEZONE_UTC8)
+                    end_time = current_time + timedelta(hours=1)
+
                     # 构建请求参数 - 获取检查点之后的所有类型活动
                     params = {
                         "user": wallet_address,
-                        # "start": checkpoint,  # 使用 start 参数而非 after
-                        "start": 1760110965000,  # 使用 start 参数而非 after
+                        "start": checkpoint,  # 查询起始时间（检查点）
+                        "end": end_time,      # 查询结束时间（当前时间 + 1小时）
                         "limit": self.batch_size,
                         "offset": offset,
                         "sort_by": "TIMESTAMP",

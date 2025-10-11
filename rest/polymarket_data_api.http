@@ -1,0 +1,96 @@
+###
+# Polymarket Data API Test File
+#
+# This file contains sample requests for the Polymarket Data API endpoints.
+# You can use the VS Code REST Client extension to execute these requests.
+#
+# Variables are defined below for easy configuration.
+###
+
+### Variables
+@data_api_host = https://data-api.polymarket.com
+@pnl_api_host = https://user-pnl-api.polymarket.com
+@lb_api_host = https://lb-api.polymarket.com
+@wallet_address = 0x55be7aa03ecfbe37aa5460db791205f7ac9ddca3
+# Example condition ID (market identifier)
+@condition_id = 0x932224f362b60683a21a1e053a42a44131defc620c3845c4b31f2b6a32e133c0
+
+###
+# @name get_positions
+# Endpoint: GET /positions
+# Description: Get user positions, sorted by token amount.
+# see: .venv/Lib/site-packages/polymarket_apis/clients/data_client.py:27
+GET {{data_api_host}}/positions?user={{wallet_address}}&limit=10&sortBy=TOKENS&sortDirection=DESC
+Accept: application/json
+
+###
+# @name get_trades
+# Endpoint: GET /trades
+# Description: Get trades for a specific user.
+# see: .venv/Lib/site-packages/polymarket_apis/clients/data_client.py:74
+GET {{data_api_host}}/trades?user={{wallet_address}}
+Accept: application/json
+
+###
+# @name get_activity
+# Endpoint: GET /activity
+# Description: Get recent activity for a user.
+# see: .venv/Lib/site-packages/polymarket_apis/clients/data_client.py:105
+GET {{data_api_host}}/activity?user={{wallet_address}}&limit=500
+Accept: application/json
+
+###
+# @name get_holders
+# Endpoint: GET /holders
+# Description: Get top holders for a specific market.
+# see: .venv/Lib/site-packages/polymarket_apis/clients/data_client.py:142
+GET {{data_api_host}}/holders?market={{condition_id}}&limit=5
+Accept: application/json
+
+###
+# @name get_value
+# Endpoint: GET /value
+# Description: Get the total value of a user's positions.
+# see: .venv/Lib/site-packages/polymarket_apis/clients/data_client.py:155
+GET {{data_api_host}}/value?user={{wallet_address}}
+Accept: application/json
+
+###
+# @name get_pnl
+# Endpoint: GET https://user-pnl-api.polymarket.com/user-pnl
+# Description: Get a user's PnL timeseries for the last month.
+# see: .venv/Lib/site-packages/polymarket_apis/clients/data_client.py:180
+GET {{pnl_api_host}}/user-pnl?user_address={{wallet_address}}&interval=1m&fidelity=1d
+Accept: application/json
+
+###
+# @name get_user_profit
+# Endpoint: GET https://lb-api.polymarket.com/profit
+# Description: Get a user's overall profit across all time.
+# see: .venv/Lib/site-packages/polymarket_apis/clients/data_client.py:197
+GET {{lb_api_host}}/profit?address={{wallet_address}}&window=all
+Accept: application/json
+
+###
+# @name get_user_volume
+# Endpoint: GET https://lb-api.polymarket.com/volume
+# Description: Get a user's overall volume across all time.
+# see: .venv/Lib/site-packages/polymarket_apis/clients/data_client.py:197
+GET {{lb_api_host}}/volume?address={{wallet_address}}&window=all
+Accept: application/json
+
+###
+# @name get_leaderboard_user_rank_profit
+# Endpoint: GET https://lb-api.polymarket.com/rank
+# Description: Get a user's rank on the all-time profit leaderboard.
+# see: .venv/Lib/site-packages/polymarket_apis/clients/data_client.py:208
+GET {{lb_api_host}}/rank?address={{wallet_address}}&window=all&rankType=pnl
+Accept: application/json
+
+###
+# @name get_leaderboard_top_users_profit
+# Endpoint: GET https://lb-api.polymarket.com/profit
+# Description: Get the top 20 users from the 7-day profit leaderboard.
+# see: .venv/Lib/site-packages/polymarket_apis/clients/data_client.py:219
+GET {{lb_api_host}}/profit?window=7d&limit=20
+Accept: application/json

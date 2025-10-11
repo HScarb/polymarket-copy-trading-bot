@@ -1,12 +1,16 @@
 import logging
 import signal
 import sys
+from datetime import datetime, timezone, timedelta
 from typing import List
 
 from src.config_loader import load_config
 from src.logger import setup_logger
 from src.wallet_monitor import WalletMonitor
 from src.in_memory_activity_queue import InMemoryActivityQueue
+
+# 定义东八区时区（UTC+8）
+TIMEZONE_UTC8 = timezone(timedelta(hours=8))
 
 
 def create_activity_queue(config: dict):
@@ -44,15 +48,59 @@ def example_activity_handler(activities: List[dict]):
     log.info(f"[示例处理器] 收到 {len(activities)} 条新活动")
 
     for activity in activities:
-        # 提取关键信息
+        # 提取基本信息
+        activity_type = getattr(activity, 'type', 'N/A')
         tx_hash = getattr(activity, 'transaction_hash', 'N/A')
         market_id = getattr(activity, 'condition_id', 'N/A')
+        market_title = getattr(activity, 'title', 'N/A')  # 市场名称
         outcome = getattr(activity, 'outcome', 'N/A')
-        size = getattr(activity, 'size', 0)
-        price = getattr(activity, 'price', 0)
-        timestamp = getattr(activity, 'timestamp', 'N/A')
+        side = getattr(activity, 'side', 'N/A')  # BUY 或 SELL
 
-        log.info(f"  - 交易: {tx_hash[:10]}... | 市场: {market_id[:10]}... | 结果: {outcome} | 数量: {size} | 价格: {price} | 时间: {timestamp}")
+        # 提取数量和价格信息
+        size = getattr(activity, 'size', 0)  # 代币数量
+        price = getattr(activity, 'price', 0)  # 单价
+        cash_amount = getattr(activity, 'cash_amount', 0)  # 现金总额
+
+        # 如果 cash_amount 为 0，用 size × price 计算
+        if cash_amount == 0 and size and price:
+            cash_amount = float(size) * float(price)
+
+        # 提取其他信息
+        maker_address = getattr(activity, 'maker_address', 'N/A')
+        timestamp_raw = getattr(activity, 'timestamp', None)
+
+        # 将时间戳转换为东八区时间
+        if timestamp_raw:
+            try:
+                if isinstance(timestamp_raw, datetime):
+                    # 如果已经是 datetime 对象，转换为东八区
+                    timestamp = timestamp_raw.astimezone(TIMEZONE_UTC8)
+                elif isinstance(timestamp_raw, str):
+                    # 如果是字符串，解析后转换为东八区
+                    dt = datetime.fromisoformat(timestamp_raw.replace('Z', '+00:00'))
+                    timestamp = dt.astimezone(TIMEZONE_UTC8)
+                elif isinstance(timestamp_raw, (int, float)):
+                    # 如果是 Unix 时间戳，转换为东八区
+                    dt = datetime.fromtimestamp(timestamp_raw, tz=timezone.utc)
+                    timestamp = dt.astimezone(TIMEZONE_UTC8)
+                else:
+                    timestamp = 'N/A'
+            except Exception as e:
+                log.warning(f"解析时间戳失败: {timestamp_raw}, 错误: {e}")
+                timestamp = timestamp_raw
+        else:
+            timestamp = 'N/A'
+
+        # 打印详细信息
+        log.info(f"  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        log.info(f"  类型: {activity_type} | 方向: {side}")
+        log.info(f"  交易哈希: {tx_hash}")
+        log.info(f"  市场: {market_title}")
+        log.info(f"  市场ID: {market_id}")
+        log.info(f"  结果: {outcome}")
+        log.info(f"  代币数量: {size} | 单价: {price} | 总金额: ${cash_amount}")
+        log.info(f"  Maker: {maker_address}")
+        log.info(f"  时间: {timestamp}")
 
 
 def main():
