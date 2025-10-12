@@ -13,7 +13,8 @@ from typing import List, Optional, Dict, Any
 import requests
 from web3 import Web3
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType, BalanceAllowanceParams
+from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType, BalanceAllowanceParams, \
+    PartialCreateOrderOptions
 
 from src.activity_queue import ActivityQueue
 from src.config_loader import load_private_key
@@ -24,7 +25,6 @@ warnings.filterwarnings('ignore', message='Unverified HTTPS request')
 # Also suppress urllib3 warnings
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 
 # ==================== 合约地址和配置 ====================
 # Polygon 网络配置
@@ -158,7 +158,7 @@ class CopyTrader:
             rpc_url = POLYGON_RPC_URL
             proxy = None
             verify_ssl = True  # 默认验证 SSL
-            
+
             if polygon_rpc_config:
                 rpc_url = polygon_rpc_config.get('url', POLYGON_RPC_URL)
                 proxy = polygon_rpc_config.get('proxy')
@@ -169,31 +169,31 @@ class CopyTrader:
             else:
                 # 尝试从环境变量读取代理
                 proxy = os.environ.get('POLYGON_RPC_PROXY')
-            
+
             # 也可以从环境变量读取 SSL 验证设置
             if os.environ.get('POLYGON_RPC_VERIFY_SSL', '').lower() in ('false', '0'):
                 verify_ssl = False
             elif os.environ.get('POLYGON_RPC_VERIFY_SSL', '').lower() in ('true', '1'):
                 verify_ssl = True
-            
+
             # 创建自定义 Session 对象
             session = requests.Session()
             session.verify = verify_ssl
-            
+
             # 配置 HTTPProvider 的请求参数
             request_kwargs = {'timeout': 60 if proxy else 30}
-            
+
             if proxy:
                 session.proxies = {
                     'http': proxy,
                     'https': proxy
                 }
                 log.info(f"[{self.name}] Using proxy for Polygon RPC: {proxy} (SSL verify: {verify_ssl})")
-            
+
             # 创建 Web3 实例，传入自定义 session
             provider = Web3.HTTPProvider(rpc_url, request_kwargs=request_kwargs, session=session)
             self.w3 = Web3(provider)
-            
+
             if not self.w3.is_connected():
                 log.warning(f"[{self.name}] 无法连接到 Polygon 网络，代币授权功能可能不可用")
         except Exception as e:
@@ -210,7 +210,7 @@ class CopyTrader:
                 host=host,
                 key=private_key,
                 chain_id=chain_id,
-                signature_type=1,
+                signature_type=2,
                 funder=self.address,
             )
 
@@ -630,10 +630,10 @@ class CopyTrader:
             )
 
             # 创建签名订单
-            signed_order = self.clob_client.create_order(order_args)
+            signed_order = self.clob_client.create_order(order_args, PartialCreateOrderOptions(neg_risk=True))
 
-            # 提交订单（GTC: Good Till Cancelled）
-            response = self.clob_client.post_order(signed_order, OrderType.GTC)
+            # 提交订单（注意：post_order 的第二个参数对限价单应该使用 OrderType.GTD）
+            response = self.clob_client.post_order(signed_order)
 
             log.info(
                 f"[{self.name}] 限价单已提交 | "
@@ -860,7 +860,7 @@ class CopyTrader:
             # 注意：asset_type="COLLATERAL" 用于查询 USDC
             params = BalanceAllowanceParams(
                 asset_type="COLLATERAL",
-                signature_type=0  # EOA wallet
+                signature_type=2  # EOA wallet
             )
             result = self.clob_client.get_balance_allowance(params)
 
