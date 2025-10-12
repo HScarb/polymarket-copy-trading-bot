@@ -1,0 +1,116 @@
+# Polymarket 复制交易机器人配置文件示例
+# 复制此文件为 config.yaml 并根据实际情况修改
+
+# 数据库配置（保留用于其他功能）
+database:
+  url: "postgresql://myuser:mypassword@localhost:5432/polymarket_bot"
+
+# 日志配置
+logging:
+  log_dir: "logs"  # 日志目录，相对于项目根目录
+  level: "INFO"    # 日志级别: DEBUG, INFO, WARNING, ERROR
+
+# Polymarket API 配置
+polymarket_api:
+  proxy: "http://localhost:7891"  # 可选，留空则不使用代理
+  timeout: 30.0
+
+# 监控配置
+monitoring:
+  wallets:
+    - "0x55be7aa03ecfbe37aa5460db791205f7ac9ddca3"  # 要监控的目标钱包地址
+  poll_interval_seconds: 5  # 轮询间隔（秒）
+  batch_size: 100          # 每次API调用获取的最大交易数量
+
+# 消息队列配置
+queue:
+  type: "memory"  # 队列类型: "memory" 或 "rabbitmq"
+  memory:
+    max_workers: 10  # 回调执行的最大线程数
+  rabbitmq:  # RabbitMQ 配置（尚未实现）
+    host: "localhost"
+    port: 5672
+    username: "guest"
+    password: "guest"
+    exchange: "polymarket_activities"
+
+# ==================== 复制交易配置 ====================
+# 用户钱包配置（可选，配置后将启用自动复制交易功能）
+user_wallets:
+  # 第一个用户钱包
+  - name: "MyMainWallet"  # 钱包别名，用于日志识别
+    address: "0x..."      # 钱包地址
+
+    # 私钥配置（安全方式）
+    # 方式1: 从环境变量读取（推荐）
+    private_key_env: "MY_WALLET_PRIVATE_KEY"
+    # 使用前需要设置环境变量:
+    #   export MY_WALLET_PRIVATE_KEY="0x..."  # Linux/Mac
+    #   set MY_WALLET_PRIVATE_KEY=0x...       # Windows CMD
+    #   $env:MY_WALLET_PRIVATE_KEY="0x..."   # Windows PowerShell
+
+    # 复制交易策略
+    copy_strategy:
+      # 最小触发金额（USDC），低于此金额的交易将被忽略
+      min_trade_amount: 10
+
+      # 订单类型: "market" (市价单) 或 "limit" (限价单)
+      order_type: "market"
+
+      # 限价单持续时间（秒），仅在 order_type=limit 时有效
+      limit_order_duration: 7200  # 默认 2小时
+
+      # 复制模式: "scale" 或 "allocate"
+      copy_mode: "scale"
+
+      # Scale 模式配置
+      # 按目标交易金额的固定百分比跟单
+      # 例如: scale_percentage=10.0 表示目标交易100 USDC，我跟10 USDC
+      scale_percentage: 10.0
+
+      # Allocate 模式配置（暂未完全实现）
+      # 按目标钱包资产配置比例跟单
+      # 例如: 目标用其总资产的5%交易，我也用我总资产的5%跟单
+
+  # 第二个用户钱包（可选）
+  # - name: "MySecondWallet"
+  #   address: "0x..."
+  #   private_key_env: "MY_SECOND_WALLET_PRIVATE_KEY"
+  #   copy_strategy:
+  #     min_trade_amount: 20
+  #     order_type: "limit"
+  #     copy_mode: "scale"
+  #     scale_percentage: 5.0
+
+# ==================== 使用说明 ====================
+#
+# 1. 仅监控模式（不复制交易）
+#    - 不配置 user_wallets 或将其置空
+#    - 程序将只监控目标钱包并打印日志
+#
+# 2. 复制交易模式
+#    - 配置至少一个 user_wallet
+#    - 设置对应的环境变量存储私钥
+#    - 程序将自动执行复制交易
+#
+# 3. 安全建议
+#    - 永远不要将私钥直接写入配置文件
+#    - 使用环境变量或密钥管理服务
+#    - 生产环境建议使用专用的交易钱包
+#    - 定期检查交易日志和账户余额
+#
+# 4. 风险控制
+#    - 合理设置 min_trade_amount 避免跟随小额测试交易
+#    - 使用 scale_percentage 控制风险敞口
+#    - 建议从小额测试开始
+#
+# ==================== 运行方式 ====================
+#
+# # 1. 设置环境变量
+# export MY_WALLET_PRIVATE_KEY="0x..."
+#
+# # 2. 运行程序
+# python -m src.main
+#
+# # 3. 查看日志
+# tail -f logs/$(date +%Y-%m-%d).log

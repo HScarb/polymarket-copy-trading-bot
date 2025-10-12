@@ -111,6 +111,9 @@ class WalletMonitor:
                         log.debug(f"钱包 {wallet_address}: 已同步到最新")
                         break
 
+                    # 打印活动摘要信息
+                    self._log_activities(wallet_address, activities)
+
                     # 将活动推送到消息队列
                     self.activity_queue.enqueue(wallet_address, activities)
                     total_activities += len(activities)
@@ -166,6 +169,70 @@ class WalletMonitor:
         except Exception as e:
             log.warning(f"获取最新时间戳时出错: {e}")
             return None
+
+    def _log_activities(self, wallet_address: str, activities: list):
+        """
+        打印活动摘要信息
+
+        Args:
+            wallet_address: 钱包地址
+            activities: 活动列表
+        """
+        for activity in activities:
+            # 提取基本信息
+            activity_type = getattr(activity, 'type', 'N/A')
+            user_name = getattr(activity, 'name', None)  # 用户名称
+            market_title = getattr(activity, 'title', 'N/A')
+            outcome = getattr(activity, 'outcome', 'N/A')
+            side = getattr(activity, 'side', 'N/A')
+            event_slug = getattr(activity, 'event_slug', None)
+
+            # 提取金额信息
+            size = getattr(activity, 'size', 0)
+            price = getattr(activity, 'price', 0)
+            cash_amount = getattr(activity, 'cash_amount', 0)
+
+            # 如果 cash_amount 为 0，用 size × price 计算
+            if cash_amount == 0 and size and price:
+                cash_amount = float(size) * float(price)
+
+            # 构建市场链接
+            if event_slug:
+                market_link = f"https://polymarket.com/event/{event_slug}"
+            else:
+                market_link = "N/A"
+
+            # 提取时间戳并转换为东八区
+            timestamp_raw = getattr(activity, 'timestamp', None)
+            if timestamp_raw:
+                try:
+                    if isinstance(timestamp_raw, datetime):
+                        timestamp = timestamp_raw.astimezone(TIMEZONE_UTC8)
+                    elif isinstance(timestamp_raw, str):
+                        dt = datetime.fromisoformat(timestamp_raw.replace('Z', '+00:00'))
+                        timestamp = dt.astimezone(TIMEZONE_UTC8)
+                    elif isinstance(timestamp_raw, (int, float)):
+                        dt = datetime.fromtimestamp(timestamp_raw, tz=timezone.utc)
+                        timestamp = dt.astimezone(TIMEZONE_UTC8)
+                    else:
+                        timestamp = 'N/A'
+                except Exception:
+                    timestamp = 'N/A'
+            else:
+                timestamp = 'N/A'
+
+            # 打印活动摘要（块状格式）
+            wallet_display = f"{wallet_address} ({user_name})" if user_name else wallet_address
+
+            log.info(f"╔════════════════════════════════════════════════════╗")
+            log.info(f"║ 钱包: {wallet_display}")
+            log.info(f"║ 类型: {activity_type} {side}")
+            log.info(f"║ 市场: {market_title}")
+            log.info(f"║ 结果: {outcome}")
+            log.info(f"║ 数量: {float(size):.4f} | 单价: ${float(price):.4f} | 总金额: ${cash_amount:.2f}")
+            log.info(f"║ 时间: {timestamp}")
+            log.info(f"║ 链接: {market_link}")
+            log.info(f"╚════════════════════════════════════════════════════╝")
 
     @staticmethod
     def _parse_timestamp(ts) -> Optional[datetime]:

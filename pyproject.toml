@@ -8,4 +8,6 @@ dependencies = [
     "peewee>=3.17.0",
     "psycopg2-binary>=2.9.9",
     "pyyaml>=6.0.1",
+    "py-clob-client>=0.25.0",
+    "python-dotenv>=1.1.1",
 ]
