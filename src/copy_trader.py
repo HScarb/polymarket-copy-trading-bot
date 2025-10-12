@@ -8,12 +8,81 @@ import time
 from functools import partial
 from typing import List, Optional, Dict, Any
 
+from web3 import Web3
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType, BalanceAllowanceParams
 
 from src.activity_queue import ActivityQueue
 from src.config_loader import load_private_key
 from src.logger import log
+
+
+# ==================== 合约地址和配置 ====================
+# Polygon 网络配置
+POLYGON_RPC_URL = "https://polygon-rpc.com"
+CHAIN_ID = 137
+
+# 代币合约地址
+USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+CONDITIONAL_TOKENS_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+
+# 交易所合约地址（需要授权的三个合约）
+EXCHANGE_ADDRESSES = [
+    "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E",
+    "0xC5d563A36AE78145C45a50134d48A1215220f80a",
+    "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296",
+]
+
+# ERC20 ABI (只需要 approve 和 allowance 方法)
+ERC20_ABI = [
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "_spender", "type": "address"},
+            {"name": "_value", "type": "uint256"}
+        ],
+        "name": "approve",
+        "outputs": [{"name": "", "type": "bool"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [
+            {"name": "_owner", "type": "address"},
+            {"name": "_spender", "type": "address"}
+        ],
+        "name": "allowance",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    }
+]
+
+# ERC1155 ABI (只需要 setApprovalForAll 和 isApprovedForAll 方法)
+ERC1155_ABI = [
+    {
+        "constant": False,
+        "inputs": [
+            {"name": "_operator", "type": "address"},
+            {"name": "_approved", "type": "bool"}
+        ],
+        "name": "setApprovalForAll",
+        "outputs": [],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [
+            {"name": "_owner", "type": "address"},
+            {"name": "_operator", "type": "address"}
+        ],
+        "name": "isApprovedForAll",
+        "outputs": [{"name": "", "type": "bool"}],
+        "type": "function"
+    }
+]
+
+# 无限授权额度
+INFINITE_ALLOWANCE = 2**256 - 1
 
 
 class CopyTraderError(Exception):
@@ -70,6 +139,19 @@ class CopyTrader:
 
         # 安全加载私钥
         private_key = load_private_key(wallet_config)
+        self.private_key = private_key  # 保存以便后续使用
+
+        # 初始化 Web3 客户端（用于代币授权）
+        try:
+            self.w3 = Web3(Web3.HTTPProvider(POLYGON_RPC_URL))
+            if not self.w3.is_connected():
+                log.warning(f"[{self.name}] 无法连接到 Polygon 网络，代币授权功能可能不可用")
+        except Exception as e:
+            log.warning(f"[{self.name}] 初始化 Web3 客户端失败: {e}")
+            self.w3 = None
+
+        # 检查并设置代币授权
+        self._ensure_token_approvals()
 
         # 初始化 CLOB 客户端
         try:
@@ -535,23 +617,223 @@ class CopyTrader:
         log.info(f"  - 成功: {self.stats['trades_succeeded']}")
         log.info(f"  - 失败: {self.stats['trades_failed']}")
 
+    def _ensure_token_approvals(self):
+        """
+        检查并确保所有必要的代币授权已设置
+
+        在第一次交易前需要授权：
+        1. USDC (ERC20) 给三个交易所合约
+        2. Conditional Tokens (ERC1155) 给三个交易所合约
+        """
+        if not self.w3 or not self.w3.is_connected():
+            log.warning(f"[{self.name}] Web3 未连接，跳过代币授权检查")
+            return
+
+        log.info(f"[{self.name}] 正在检查代币授权状态...")
+
+        try:
+            # 检查并授权 USDC
+            self._ensure_usdc_approvals()
+
+            # 检查并授权 Conditional Tokens
+            self._ensure_conditional_tokens_approvals()
+
+            log.info(f"[{self.name}] ✓ 所有代币授权已就绪")
+
+        except Exception as e:
+            log.error(f"[{self.name}] 代币授权检查失败: {e}", exc_info=True)
+            raise
+
+    def _ensure_usdc_approvals(self):
+        """
+        检查并授权 USDC (ERC20) 给所有交易所合约
+        """
+        usdc_contract = self.w3.eth.contract(
+            address=Web3.to_checksum_address(USDC_ADDRESS),
+            abi=ERC20_ABI
+        )
+
+        for exchange_address in EXCHANGE_ADDRESSES:
+            try:
+                checksum_exchange = Web3.to_checksum_address(exchange_address)
+
+                # 检查当前授权额度
+                current_allowance = usdc_contract.functions.allowance(
+                    Web3.to_checksum_address(self.address),
+                    checksum_exchange
+                ).call()
+
+                if current_allowance >= INFINITE_ALLOWANCE // 2:
+                    log.debug(
+                        f"[{self.name}] USDC 已授权给 {exchange_address[:10]}... "
+                        f"(额度: {current_allowance})"
+                    )
+                    continue
+
+                # 需要授权
+                log.info(
+                    f"[{self.name}] 正在授权 USDC 给交易所 {exchange_address[:10]}..."
+                )
+
+                # 构建授权交易
+                approve_txn = usdc_contract.functions.approve(
+                    checksum_exchange,
+                    INFINITE_ALLOWANCE
+                ).build_transaction({
+                    'from': Web3.to_checksum_address(self.address),
+                    'nonce': self.w3.eth.get_transaction_count(
+                        Web3.to_checksum_address(self.address)
+                    ),
+                    'gas': 100000,
+                    'gasPrice': self.w3.eth.gas_price,
+                    'chainId': CHAIN_ID
+                })
+
+                # 签名交易
+                signed_txn = self.w3.eth.account.sign_transaction(
+                    approve_txn,
+                    private_key=self.private_key
+                )
+
+                # 发送交易
+                tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
+
+                log.info(
+                    f"[{self.name}] USDC 授权交易已提交: {tx_hash.hex()}"
+                )
+
+                # 等待交易确认
+                receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+                if receipt['status'] == 1:
+                    log.info(
+                        f"[{self.name}] ✓ USDC 授权成功: {exchange_address[:10]}..."
+                    )
+                else:
+                    log.error(
+                        f"[{self.name}] ✗ USDC 授权失败: {exchange_address[:10]}..."
+                    )
+                    raise OrderExecutionError(
+                        f"USDC 授权交易失败: {tx_hash.hex()}"
+                    )
+
+            except Exception as e:
+                log.error(
+                    f"[{self.name}] 授权 USDC 给 {exchange_address} 时出错: {e}",
+                    exc_info=True
+                )
+                raise
+
+    def _ensure_conditional_tokens_approvals(self):
+        """
+        检查并授权 Conditional Tokens (ERC1155) 给所有交易所合约
+        """
+        ct_contract = self.w3.eth.contract(
+            address=Web3.to_checksum_address(CONDITIONAL_TOKENS_ADDRESS),
+            abi=ERC1155_ABI
+        )
+
+        for exchange_address in EXCHANGE_ADDRESSES:
+            try:
+                checksum_exchange = Web3.to_checksum_address(exchange_address)
+
+                # 检查当前是否已授权
+                is_approved = ct_contract.functions.isApprovedForAll(
+                    Web3.to_checksum_address(self.address),
+                    checksum_exchange
+                ).call()
+
+                if is_approved:
+                    log.debug(
+                        f"[{self.name}] Conditional Tokens 已授权给 {exchange_address[:10]}..."
+                    )
+                    continue
+
+                # 需要授权
+                log.info(
+                    f"[{self.name}] 正在授权 Conditional Tokens 给交易所 {exchange_address[:10]}..."
+                )
+
+                # 构建授权交易
+                approve_txn = ct_contract.functions.setApprovalForAll(
+                    checksum_exchange,
+                    True
+                ).build_transaction({
+                    'from': Web3.to_checksum_address(self.address),
+                    'nonce': self.w3.eth.get_transaction_count(
+                        Web3.to_checksum_address(self.address)
+                    ),
+                    'gas': 100000,
+                    'gasPrice': self.w3.eth.gas_price,
+                    'chainId': CHAIN_ID
+                })
+
+                # 签名交易
+                signed_txn = self.w3.eth.account.sign_transaction(
+                    approve_txn,
+                    private_key=self.private_key
+                )
+
+                # 发送交易
+                tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
+
+                log.info(
+                    f"[{self.name}] Conditional Tokens 授权交易已提交: {tx_hash.hex()}"
+                )
+
+                # 等待交易确认
+                receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+                if receipt['status'] == 1:
+                    log.info(
+                        f"[{self.name}] ✓ Conditional Tokens 授权成功: {exchange_address[:10]}..."
+                    )
+                else:
+                    log.error(
+                        f"[{self.name}] ✗ Conditional Tokens 授权失败: {exchange_address[:10]}..."
+                    )
+                    raise OrderExecutionError(
+                        f"Conditional Tokens 授权交易失败: {tx_hash.hex()}"
+                    )
+
+            except Exception as e:
+                log.error(
+                    f"[{self.name}] 授权 Conditional Tokens 给 {exchange_address} 时出错: {e}",
+                    exc_info=True
+                )
+                raise
+
     def _log_balance(self):
         """查询并打印当前钱包余额"""
         try:
-            # 查询余额和授权额度
+            # 查询 USDC 余额和授权额度
+            # 注意：asset_type="COLLATERAL" 用于查询 USDC
             params = BalanceAllowanceParams(
-                asset_type="CONDITIONAL",
+                asset_type="COLLATERAL",
                 signature_type=0  # EOA wallet
             )
             result = self.clob_client.get_balance_allowance(params)
 
-            # 提取余额信息
-            balance = result.get('balance', 'N/A')
-            allowance = result.get('allowance', 'N/A')
+            # 提取余额信息（USDC 使用 6 位小数精度）
+            balance_raw = result.get('balance', 'N/A')
+            allowance_raw = result.get('allowance', 'N/A')
+
+            # 转换为实际 USDC 数量（除以 10^6）
+            if balance_raw != 'N/A':
+                balance = float(balance_raw) / 1_000_000
+                balance_str = f"{balance:.2f}"
+            else:
+                balance_str = 'N/A'
+
+            if allowance_raw != 'N/A':
+                allowance = float(allowance_raw) / 1_000_000
+                allowance_str = f"{allowance:.2f}"
+            else:
+                allowance_str = 'N/A'
 
             log.info(
-                f"[{self.name}] 当前余额: {balance} USDC | "
-                f"授权额度: {allowance} USDC"
+                f"[{self.name}] 当前 USDC 余额: {balance_str} | "
+                f"授权额度: {allowance_str}"
             )
 
         except Exception as e:
