@@ -45,7 +45,16 @@ queue:
 user_wallets:
   # 第一个用户钱包
   - name: "MyMainWallet"  # 钱包别名，用于日志识别
-    address: "0x..."      # 钱包地址
+    address: "0x..."      # EOA 钱包地址
+
+    # 代理合约地址（可选，仅在使用浏览器钱包代理模式时需要）
+    proxy_address: "0x..."  # Polymarket 代理合约地址（funder）
+
+    # 签名类型（可选，默认 0）
+    signature_type: 0  # 0=标准EOA模式, 2=浏览器钱包代理模式
+    # 说明:
+    #   - signature_type=0: 直接用私钥签名（不需要 proxy_address）
+    #   - signature_type=2: 使用 Polymarket 代理合约（需要 proxy_address）
 
     # 私钥配置（安全方式）
     # 方式1: 从环境变量读取（推荐）
@@ -82,10 +91,12 @@ user_wallets:
       # 按目标钱包资产配置比例跟单
       # 例如: 目标用其总资产的5%交易，我也用我总资产的5%跟单
 
-  # 第二个用户钱包（可选）
-  # - name: "MySecondWallet"
-  #   address: "0x..."
-  #   private_key_env: "MY_SECOND_WALLET_PRIVATE_KEY"
+  # 第二个用户钱包（可选 - 代理模式示例）
+  # - name: "MyProxyWallet"
+  #   address: "0x..."  # 你的 EOA 钱包地址
+  #   proxy_address: "0x..."  # 从 Polymarket 网站获取的代理合约地址
+  #   signature_type: 2  # 使用代理模式
+  #   private_key_env: "MY_PROXY_WALLET_PRIVATE_KEY"
   #   copy_strategy:
   #     min_trigger_amount: 20
   #     max_trade_amount: 50

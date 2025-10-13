@@ -32,9 +32,10 @@ queue:
 # 用户钱包配置（可选，配置后将启用自动复制交易功能）
 user_wallets:
   - name: "Scarb4"  # 钱包别名，用于日志识别
-    address: "0x7c194708d0b203b00c57c001cda31eeb8e961aa7"      # 钱包地址
-#    address: "0x2173D82638Bd32328cc3A1118408A2a577ea2869"      # 钱包地址
+    address: "0x7c194708d0b203b00c57c001cda31eeb8e961aa7"      # EOA 钱包地址
+    proxy_address: "0x2173D82638Bd32328cc3A1118408A2a577ea2869"  # Polymarket 代理合约地址（funder）
     private_key_env: "SCARB4_PRIVATE_KEY"  # 从环境变量读取私钥
+    signature_type: 2  # 2=浏览器钱包代理模式, 0=标准EOA模式
 
     # 复制交易策略
     copy_strategy:
@@ -43,7 +44,7 @@ user_wallets:
 
       # 最大复制金额（USDC），我方复制交易的单笔金额上限
       # 设为 0 表示不限制
-      max_trade_amount: 8
+      max_trade_amount: 5
 
       # 订单类型: "market" (市价单) 或 "limit" (限价单)
       order_type: "limit"

@@ -148,6 +148,10 @@ class CopyTrader:
         self.strategy_config = wallet_config['copy_strategy']
         self.activity_queue = activity_queue
 
+        # 获取签名类型和代理地址配置
+        self.signature_type = wallet_config.get('signature_type', 0)  # 默认使用 EOA 模式
+        self.proxy_address = wallet_config.get('proxy_address')  # 代理合约地址（funder）
+
         # 安全加载私钥
         private_key = load_private_key(wallet_config)
         self.private_key = private_key  # 保存以便后续使用
@@ -201,18 +205,45 @@ class CopyTrader:
             self.w3 = None
 
         # 检查并设置代币授权
-        self._ensure_token_approvals()
+        # 注意：代理模式（signature_type=2）不需要手动设置链上授权
+        try:
+            if self.signature_type == 0:
+                # EOA 模式：需要手动设置链上代币授权
+                self._ensure_token_approvals()
+            else:
+                log.info(f"[{self.name}] 代理模式跳过链上代币授权（由 Polymarket 管理）")
+        except Exception as e:
+            log.warning(f"[{self.name}] 代币授权失败: {e}")
 
         # 初始化 CLOB 客户端
         try:
-            # 使用 EOA (Externally Owned Account) 签名模式
-            # signature_type=0: 标准 EOA 签名，适用于直接使用私钥的钱包
-            self.clob_client = ClobClient(
-                host=host,
-                key=private_key,
-                chain_id=chain_id,
-                signature_type=0,
-            )
+            # 根据配置的 signature_type 初始化客户端
+            # signature_type=0: 标准 EOA 签名，直接使用私钥
+            # signature_type=2: 浏览器钱包代理模式，使用 Polymarket 代理合约
+            client_params = {
+                'host': host,
+                'key': private_key,
+                'chain_id': chain_id,
+                'signature_type': self.signature_type,
+            }
+
+            # 如果是代理模式，需要指定 funder 地址
+            if self.signature_type == 2:
+                if not self.proxy_address:
+                    raise ValueError(
+                        f"钱包 '{self.name}' 使用 signature_type=2（代理模式），"
+                        f"必须配置 proxy_address（代理合约地址）"
+                    )
+                client_params['funder'] = self.proxy_address
+                log.info(
+                    f"[{self.name}] 使用代理模式 | "
+                    f"EOA: {self.address} | "
+                    f"Funder: {self.proxy_address}"
+                )
+            else:
+                log.info(f"[{self.name}] 使用 EOA 直接签名模式")
+
+            self.clob_client = ClobClient(**client_params)
 
             # 创建或派生 API credentials (Level 2 认证所需)
             try:
@@ -230,6 +261,10 @@ class CopyTrader:
 
             # 查询并打印余额
             self._log_balance()
+
+            # 对于代理模式，设置 API allowance
+            if self.signature_type == 2:
+                self._ensure_api_allowance()
 
         except Exception as e:
             log.error(f"初始化 ClobClient 失败: {e}")
@@ -870,7 +905,7 @@ class CopyTrader:
             # 注意：asset_type="COLLATERAL" 用于查询 USDC
             params = BalanceAllowanceParams(
                 asset_type="COLLATERAL",
-                signature_type=0  # EOA wallet (标准外部账户)
+                signature_type=self.signature_type  # 使用配置的签名类型
             )
             result = self.clob_client.get_balance_allowance(params)
 
@@ -898,3 +933,101 @@ class CopyTrader:
 
         except Exception as e:
             log.warning(f"[{self.name}] 查询余额失败: {e}")
+
+    def _ensure_api_allowance(self):
+        """
+        检查并同步代理模式的 API allowance
+
+        代理模式（signature_type=2）的 allowance 管理说明：
+        1. 链上授权：必须通过 Polymarket 网站界面完成（点击 "Enable Trading"）
+        2. API 同步：调用 update_balance_allowance() 让 CLOB API 知晓链上授权状态
+
+        重要提示：
+        - 首次使用前，必须在 Polymarket 网站上点击 "Enable Trading"
+        - 这会让代理合约授权 USDC 和 Conditional Tokens 给交易所合约
+        - 本方法仅同步 API 状态，不执行链上授权
+        - 如果 API 不可用，会跳过检查并继续运行（链上授权是独立的）
+        """
+        try:
+            log.info(f"[{self.name}] 正在检查代理钱包 allowance 状态...")
+
+            # 查询当前 API allowance 状态
+            params = BalanceAllowanceParams(
+                asset_type="COLLATERAL",
+                signature_type=self.signature_type
+            )
+            result = self.clob_client.get_balance_allowance(params)
+
+            # 提取当前 allowance（USDC 使用 6 位小数精度）
+            current_allowance_raw = result.get('allowance', 0)
+            current_allowance = float(current_allowance_raw) / 1_000_000
+
+            # 提取余额信息
+            balance_raw = result.get('balance', 0)
+            balance = float(balance_raw) / 1_000_000
+
+            log.info(
+                f"[{self.name}] 当前状态 | "
+                f"余额: ${balance:.2f} | "
+                f"Allowance: ${current_allowance:.2f}"
+            )
+
+            # 检查 allowance 是否足够（至少等于余额，或者足够大）
+            if current_allowance > 0 and current_allowance >= balance * 0.9:
+                log.info(f"[{self.name}] Allowance 状态正常，可以开始交易")
+                return
+
+            # Allowance 不足但不为 0，尝试同步
+            if current_allowance > 0:
+                log.info(f"[{self.name}] Allowance 较低，尝试同步 API 状态...")
+                try:
+                    self.clob_client.update_balance_allowance(params)
+
+                    # 再次查询确认
+                    result_after = self.clob_client.get_balance_allowance(params)
+                    new_allowance_raw = result_after.get('allowance', 0)
+                    new_allowance = float(new_allowance_raw) / 1_000_000
+
+                    log.info(f"[{self.name}] 同步后 Allowance: ${new_allowance:.2f}")
+
+                    if new_allowance >= balance * 0.9:
+                        log.info(f"[{self.name}] Allowance 状态已更新，可以交易")
+                    else:
+                        log.warning(
+                            f"[{self.name}] Allowance 仍然较低，如遇到交易失败，"
+                            f"请在 Polymarket 网站上重新 'Enable Trading'"
+                        )
+                except Exception as sync_error:
+                    log.warning(f"[{self.name}] 同步 allowance 失败: {sync_error}")
+
+                return
+
+            # Allowance 为 0 - 这是个警告，但不致命
+            log.warning(
+                f"[{self.name}] API 显示 allowance 为 0！\n"
+                f"如果链上已经完成授权（Enable Trading），这可能只是 API 同步问题。\n"
+                f"程序将继续运行，如果交易失败，请检查：\n"
+                f"1. 已在 Polymarket 网站上点击 'Enable Trading'\n"
+                f"2. 连接的钱包地址是：{self.proxy_address} (Proxy)\n"
+                f"3. 等待几分钟让 API 同步链上状态\n"
+            )
+
+            # 尝试同步一次
+            try:
+                log.info(f"[{self.name}] 尝试同步 API allowance...")
+                self.clob_client.update_balance_allowance(params)
+                log.info(f"[{self.name}] API allowance 同步请求已发送")
+            except Exception as sync_error:
+                log.warning(f"[{self.name}] 同步请求失败: {sync_error}")
+
+            # 不抛出异常，允许程序继续运行
+            log.info(f"[{self.name}] 继续初始化，将在实际交易时验证 allowance")
+
+        except Exception as e:
+            # 捕获所有异常，记录日志但不中断程序
+            log.warning(
+                f"[{self.name}] 无法检查 API allowance（可能是网络问题）: {e}\n"
+                f"如果您已在 Polymarket 网站上完成 'Enable Trading'，\n"
+                f"程序将继续运行。链上授权与 API 状态是独立的。"
+            )
+            log.info(f"[{self.name}] 继续初始化...")

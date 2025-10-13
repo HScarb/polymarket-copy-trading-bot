@@ -12,9 +12,9 @@ def load_config(path: str = "config.yaml") -> dict:
     env_path = root_dir / '.env'
     if env_path.exists():
         load_dotenv(env_path)
-        print(f"✓ 已加载环境变量文件: {env_path}")
+        print(f"Loaded .env file: {env_path}")
     else:
-        print(f"提示: 未找到 .env 文件，将从系统环境变量读取")
+        print(f"Note: .env file not found, will use system environment variables")
 
     config_path = Path(path)
 
@@ -98,7 +98,23 @@ def _validate_user_wallets(wallets: list) -> list:
                 f"用户钱包 '{wallet['name']}' 的 order_type 必须是 'market' 或 'limit'，当前值: {order_type}"
             )
 
+        # 验证 signature_type 和代理配置
+        signature_type = wallet.get('signature_type', 0)
+        if signature_type not in [0, 1, 2]:
+            raise ValueError(
+                f"用户钱包 '{wallet['name']}' 的 signature_type 必须是 0, 1 或 2，当前值: {signature_type}"
+            )
+
+        # 如果使用代理模式（signature_type=2），必须配置 proxy_address
+        if signature_type == 2:
+            if 'proxy_address' not in wallet or not wallet['proxy_address']:
+                raise ValueError(
+                    f"用户钱包 '{wallet['name']}' 使用 signature_type=2（代理模式），"
+                    f"必须配置 'proxy_address'（Polymarket 代理合约地址）"
+                )
+
         # 设置默认值
+        wallet.setdefault('signature_type', 0)  # 默认使用 EOA 模式
         strategy.setdefault('min_trigger_amount', 0)
         strategy.setdefault('max_trade_amount', 0)  # 0 表示不限制
         strategy.setdefault('order_type', 'market')
