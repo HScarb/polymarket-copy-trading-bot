@@ -11,7 +11,8 @@ polymarket_api:
 
 monitoring:
   wallets:
-    - "0x55be7aa03ecfbe37aa5460db791205f7ac9ddca3"
+#    - "0x55be7aa03ecfbe37aa5460db791205f7ac9ddca3"
+    - "0xd218e474776403a330142299f7796e8ba32eb5c9"
   poll_interval_seconds: 5
   batch_size: 100  # 每次API调用获取的最大交易数量
 
@@ -19,10 +20,45 @@ monitoring:
 queue:
   type: "memory"  # 可选: "memory" 或 "rabbitmq"
   memory:
-    max_workers: 10  # 回调执行的最大线程数
+    max_workers: 1  # 回调执行的最大线程数
   rabbitmq:
     host: "localhost"
     port: 5672
     username: "guest"
     password: "guest"
     exchange: "polymarket_activities"
+
+# ==================== 复制交易配置 ====================
+# 用户钱包配置（可选，配置后将启用自动复制交易功能）
+user_wallets:
+  - name: "Scarb4"  # 钱包别名，用于日志识别
+    address: "0x7c194708d0b203b00c57c001cda31eeb8e961aa7"      # 钱包地址
+#    address: "0x2173D82638Bd32328cc3A1118408A2a577ea2869"      # 钱包地址
+    private_key_env: "SCARB4_PRIVATE_KEY"  # 从环境变量读取私钥
+
+    # 复制交易策略
+    copy_strategy:
+      # 最小触发金额（USDC），目标钱包交易金额低于此值时不触发复制
+      min_trigger_amount: 0
+
+      # 最大复制金额（USDC），我方复制交易的单笔金额上限
+      # 设为 0 表示不限制
+      max_trade_amount: 8
+
+      # 订单类型: "market" (市价单) 或 "limit" (限价单)
+      order_type: "limit"
+
+      # 限价单持续时间（秒），仅在 order_type=limit 时有效
+      limit_order_duration: 7200  # 默认 2小时
+
+      # 复制模式: "scale" 或 "allocate"
+      copy_mode: "scale"
+
+      # Scale 模式配置
+      # 按目标交易金额的固定百分比跟单
+      # 例如: scale_percentage=10.0 表示目标交易100 USDC，我跟10 USDC
+      scale_percentage: 100
+
+      # Allocate 模式配置（暂未完全实现）
+      # 按目标钱包资产配置比例跟单
+      # 例如: 目标用其总资产的5%交易，我也用我总资产的5%跟单

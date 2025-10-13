@@ -205,13 +205,13 @@ class CopyTrader:
 
         # 初始化 CLOB 客户端
         try:
-            # 首先创建 API credentials (Level 2 认证需要)
+            # 使用 EOA (Externally Owned Account) 签名模式
+            # signature_type=0: 标准 EOA 签名，适用于直接使用私钥的钱包
             self.clob_client = ClobClient(
                 host=host,
                 key=private_key,
                 chain_id=chain_id,
-                signature_type=2,
-                funder=self.address,
+                signature_type=0,
             )
 
             # 创建或派生 API credentials (Level 2 认证所需)
@@ -297,14 +297,14 @@ class CopyTrader:
             log.debug(f"[{self.name}] 跳过非交易活动: {activity_type}")
             return False
 
-        # 过滤2: 检查交易金额
+        # 过滤2: 检查目标交易金额是否达到触发阈值
         cash_amount = self._get_trade_value(activity)
 
-        min_amount = self.strategy_config.get('min_trade_amount', 0)
-        if cash_amount < min_amount:
+        min_trigger = self.strategy_config.get('min_trigger_amount', 0)
+        if cash_amount < min_trigger:
             log.info(
-                f"[{self.name}] 跳过交易: 金额 ${cash_amount:.2f} "
-                f"低于最小值 ${min_amount:.2f}"
+                f"[{self.name}] 跳过交易: 目标金额 ${cash_amount:.2f} "
+                f"低于触发阈值 ${min_trigger:.2f}"
             )
             return False
 
@@ -394,7 +394,7 @@ class CopyTrader:
             target_wallet: 目标钱包地址
 
         Returns:
-            计算后的交易金额（USDC）
+            计算后的交易金额（USDC），已应用最大金额限制
         """
         mode = self.strategy_config['copy_mode']
         target_value = self._get_trade_value(activity)
@@ -407,16 +407,26 @@ class CopyTrader:
                 f"[{self.name}] Scale 模式: "
                 f"目标金额 ${target_value:.2f} × {percentage}% = ${calculated_size:.2f}"
             )
-            return calculated_size
 
         elif mode == 'allocate':
             # 按比例分配模式（暂未实现获取目标钱包余额的功能）
             # TODO: 实现获取目标钱包余额
             log.warning(f"[{self.name}] Allocate 模式暂未完全实现，降级为 Scale 模式 10%")
-            return target_value * 0.1
+            calculated_size = target_value * 0.1
 
         else:
             raise ValueError(f"不支持的复制模式: {mode}")
+
+        # 应用最大金额限制
+        max_amount = self.strategy_config.get('max_trade_amount', 0)
+        if max_amount > 0 and calculated_size > max_amount:
+            log.info(
+                f"[{self.name}] 应用最大金额限制: "
+                f"${calculated_size:.2f} → ${max_amount:.2f}"
+            )
+            calculated_size = max_amount
+
+        return calculated_size
 
     def _execute_trade_with_retry(
         self,
@@ -860,7 +870,7 @@ class CopyTrader:
             # 注意：asset_type="COLLATERAL" 用于查询 USDC
             params = BalanceAllowanceParams(
                 asset_type="COLLATERAL",
-                signature_type=2  # EOA wallet
+                signature_type=0  # EOA wallet (标准外部账户)
             )
             result = self.clob_client.get_balance_allowance(params)
 

@@ -57,8 +57,12 @@ user_wallets:
 
     # 复制交易策略
     copy_strategy:
-      # 最小触发金额（USDC），低于此金额的交易将被忽略
-      min_trade_amount: 10
+      # 最小触发金额（USDC），目标钱包交易金额低于此值时不触发复制
+      min_trigger_amount: 10
+
+      # 最大复制金额（USDC），我方复制交易的单笔金额上限
+      # 设为 0 表示不限制
+      max_trade_amount: 100
 
       # 订单类型: "market" (市价单) 或 "limit" (限价单)
       order_type: "market"
@@ -83,7 +87,8 @@ user_wallets:
   #   address: "0x..."
   #   private_key_env: "MY_SECOND_WALLET_PRIVATE_KEY"
   #   copy_strategy:
-  #     min_trade_amount: 20
+  #     min_trigger_amount: 20
+  #     max_trade_amount: 50
   #     order_type: "limit"
   #     copy_mode: "scale"
   #     scale_percentage: 5.0
@@ -106,7 +111,8 @@ user_wallets:
 #    - 定期检查交易日志和账户余额
 #
 # 4. 风险控制
-#    - 合理设置 min_trade_amount 避免跟随小额测试交易
+#    - 合理设置 min_trigger_amount 避免跟随小额测试交易
+#    - 设置 max_trade_amount 限制单笔复制金额上限
 #    - 使用 scale_percentage 控制风险敞口
 #    - 建议从小额测试开始
 #

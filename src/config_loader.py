@@ -99,7 +99,8 @@ def _validate_user_wallets(wallets: list) -> list:
             )
 
         # 设置默认值
-        strategy.setdefault('min_trade_amount', 0)
+        strategy.setdefault('min_trigger_amount', 0)
+        strategy.setdefault('max_trade_amount', 0)  # 0 表示不限制
         strategy.setdefault('order_type', 'market')
         strategy.setdefault('limit_order_duration', 7200)
 

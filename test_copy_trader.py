@@ -107,7 +107,8 @@ def test_activity_filtering():
         'address': '0x123',
         'private_key_env': 'FAKE_KEY',  # 这里不会真正使用
         'copy_strategy': {
-            'min_trade_amount': 50.0,
+            'min_trigger_amount': 50.0,
+            'max_trade_amount': 100.0,
             'copy_mode': 'scale',
             'scale_percentage': 10.0,
             'order_type': 'market'
@@ -129,14 +130,14 @@ def test_activity_filtering():
     log.info("测试各种活动类型的过滤...")
 
     # 模拟 _should_process_activity 方法
-    def should_process(activity, min_amount=50.0):
+    def should_process(activity, min_trigger=50.0):
         # 只处理 TRADE 类型
         if activity.type != 'TRADE':
             return False
 
-        # 检查最小金额
+        # 检查最小触发金额
         cash_amount = activity.cash_amount
-        if cash_amount < min_amount:
+        if cash_amount < min_trigger:
             return False
 
         return True
@@ -144,7 +145,7 @@ def test_activity_filtering():
     # 测试用例
     test_cases = [
         (create_mock_activity("TRADE", 100.0), True, "正常交易（100 USDC）"),
-        (create_mock_activity("TRADE", 30.0), False, "金额过低（30 USDC < 50）"),
+        (create_mock_activity("TRADE", 30.0), False, "金额过低（30 USDC < 50触发阈值）"),
         (create_mock_activity("SPLIT", 100.0), False, "非交易类型（SPLIT）"),
         (create_mock_activity("MERGE", 100.0), False, "非交易类型（MERGE）"),
         (create_mock_activity("TRADE", 50.0), True, "边界情况（正好 50 USDC）"),
@@ -170,23 +171,28 @@ def test_activity_filtering():
 def test_trade_size_calculation():
     """测试交易规模计算"""
     log.info("=" * 60)
-    log.info("测试 3: 交易规模计算")
+    log.info("测试 3: 交易规模计算（含最大金额限制）")
     log.info("=" * 60)
 
-    # Scale 模式测试
-    def calculate_scale(target_value, percentage):
-        return target_value * (percentage / 100)
+    # Scale 模式测试（带最大金额限制）
+    def calculate_scale(target_value, percentage, max_amount=0):
+        calculated = target_value * (percentage / 100)
+        if max_amount > 0 and calculated > max_amount:
+            return max_amount
+        return calculated
 
     test_cases = [
-        (100.0, 10.0, 10.0, "10% of 100 = 10"),
-        (250.0, 5.0, 12.5, "5% of 250 = 12.5"),
-        (50.0, 20.0, 10.0, "20% of 50 = 10"),
-        (1000.0, 1.0, 10.0, "1% of 1000 = 10"),
+        (100.0, 10.0, 0, 10.0, "10% of 100 = 10（无限制）"),
+        (250.0, 5.0, 0, 12.5, "5% of 250 = 12.5（无限制）"),
+        (50.0, 20.0, 0, 10.0, "20% of 50 = 10（无限制）"),
+        (1000.0, 10.0, 50.0, 50.0, "10% of 1000 = 100，限制为 50"),
+        (500.0, 20.0, 80.0, 80.0, "20% of 500 = 100，限制为 80"),
+        (200.0, 10.0, 100.0, 20.0, "10% of 200 = 20 < 100（不受限）"),
     ]
 
     all_passed = True
-    for target, percentage, expected, description in test_cases:
-        result = calculate_scale(target, percentage)
+    for target, percentage, max_amt, expected, description in test_cases:
+        result = calculate_scale(target, percentage, max_amt)
         passed = abs(result - expected) < 0.01
         status = "✓" if passed else "✗"
         if not passed:
