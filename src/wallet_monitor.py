@@ -1,32 +1,51 @@
+"""
+Wallet monitoring module for Polymarket.
+
+Monitors wallet addresses for new trading activities and
+pushes them to an activity queue for processing.
+"""
+
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+from datetime import datetime, timedelta
+from typing import Optional, List
 
 import httpx
 from polymarket_apis.clients.data_client import PolymarketDataClient
 
 from src.activity_queue import ActivityQueue
 from src.logger import log
-
-# 定义东八区时区（UTC+8）
-TIMEZONE_UTC8 = timezone(timedelta(hours=8))
+from src.utils.time_utils import TIMEZONE_UTC8, get_latest_timestamp
+from src.utils.activity_logger import log_activities
 
 
 class WalletMonitor:
-    """钱包监控器核心类"""
+    """
+    Core wallet monitoring class.
 
-    def __init__(self, wallets: list[str], poll_interval: int, activity_queue: ActivityQueue, batch_size: int = 500, proxy: Optional[str] = None, timeout: float = 30.0):
+    Monitors specified wallet addresses for new activities and
+    publishes them to an activity queue using a pub/sub pattern.
+    """
+
+    def __init__(
+        self,
+        wallets: List[str],
+        poll_interval: int,
+        activity_queue: ActivityQueue,
+        batch_size: int = 500,
+        proxy: Optional[str] = None,
+        timeout: float = 30.0
+    ):
         """
-        初始化监控器,配置钱包、轮询间隔和消息队列
+        Initialize monitor with wallets and configuration.
 
         Args:
-            wallets: 要监控的钱包地址列表
-            poll_interval: 轮询间隔（秒）
-            activity_queue: 活动队列实例
-            batch_size: 每次获取的最大活动数量
-            proxy: 代理服务器地址（可选）
-            timeout: API 超时时间（秒）
+            wallets: List of wallet addresses to monitor
+            poll_interval: Polling interval in seconds
+            activity_queue: Activity queue instance for publishing events
+            batch_size: Maximum activities to fetch per request
+            proxy: Proxy server address (optional)
+            timeout: API timeout in seconds
         """
         self.wallets = wallets
         self.poll_interval = poll_interval
@@ -34,228 +53,151 @@ class WalletMonitor:
         self.activity_queue = activity_queue
         self.data_client = PolymarketDataClient()
 
-        # 配置 API 客户端
-        if proxy:
-            self.data_client.client = httpx.Client(proxy=proxy)
-        else:
-            self.data_client.client = httpx.Client()
+        # Configure API client
+        self.data_client.client = httpx.Client(proxy=proxy) if proxy else httpx.Client()
 
         self.stop_event = threading.Event()
         self.executor: Optional[ThreadPoolExecutor] = None
 
-        log.info(f"WalletMonitor 已初始化，监控 {len(wallets)} 个钱包")
+        log.info(f"WalletMonitor initialized, monitoring {len(wallets)} wallet(s)")
 
     def start(self):
-        """启动所有监控任务和线程池"""
-        log.info(f"开始监控 {len(self.wallets)} 个钱包地址")
+        """Start all monitoring tasks and thread pool."""
+        log.info(f"Starting monitoring for {len(self.wallets)} wallet address(es)")
 
-        # 创建线程池
+        # Create thread pool
         self.executor = ThreadPoolExecutor(max_workers=len(self.wallets))
 
-        # 为每个钱包提交监控任务
+        # Submit monitoring task for each wallet
         for wallet in self.wallets:
             self.executor.submit(self._monitor_wallet, wallet)
 
-        log.info("所有监控任务已启动")
+        log.info("All monitoring tasks started")
 
     def stop(self):
-        """平滑地停止所有监控任务"""
-        log.info("正在停止监控...")
+        """Gracefully stop all monitoring tasks."""
+        log.info("Stopping monitoring...")
         self.stop_event.set()
 
         if self.executor:
             self.executor.shutdown(wait=True)
 
-        log.info("监控已停止")
+        log.info("Monitoring stopped")
 
     def _monitor_wallet(self, wallet_address: str):
         """
-        监控单个钱包的私有方法
+        Monitor a single wallet (runs in dedicated thread).
 
-        使用当前时间（东八区）作为检查点（checkpoint），只获取此时间之后的新活动
+        Uses current time (UTC+8) as checkpoint and only fetches
+        activities that occur after this time.
+
+        Args:
+            wallet_address: Wallet address to monitor
         """
-        log.info(f"开始监控钱包: {wallet_address}")
+        log.info(f"Started monitoring wallet: {wallet_address}")
 
-        # 设置检查点为当前时间（东八区）
+        # Set checkpoint to current time (UTC+8)
         checkpoint = datetime.now(TIMEZONE_UTC8)
-        log.info(f"钱包 {wallet_address}: 设置检查点为 {checkpoint}（东八区），监控此时间之后的活动")
+        log.info(
+            f"Wallet {wallet_address}: Set checkpoint to {checkpoint} (UTC+8), "
+            f"monitoring activities after this time"
+        )
 
         while not self.stop_event.is_set():
             try:
-                total_activities = 0
-                offset = 0
+                total_activities, updated_checkpoint = self._fetch_and_publish_activities(
+                    wallet_address,
+                    checkpoint
+                )
 
-                # 分页获取数据
-                while True:
-                    # 设置查询结束时间为当前时间 + 1小时，防止间隔太小查不到数据
-                    current_time = datetime.now(TIMEZONE_UTC8)
-                    end_time = current_time + timedelta(hours=1)
-
-                    # 构建请求参数 - 获取检查点之后的所有类型活动
-                    params = {
-                        "user": wallet_address,
-                        "start": checkpoint,  # 查询起始时间（检查点）
-                        "end": end_time,      # 查询结束时间（当前时间 + 1小时）
-                        "limit": self.batch_size,
-                        "offset": offset,
-                        "sort_by": "TIMESTAMP",
-                        "sort_direction": "ASC"  # 从旧到新排序，便于更新检查点
-                    }
-                    # 不指定 type 参数，获取所有类型的活动（TRADE, SPLIT, MERGE, REDEEM, REWARD, CONVERSION）
-
-                    # 获取一批活动
-                    activities = self.data_client.get_activity(**params)
-
-                    # 如果没有数据，退出分页循环
-                    if not activities:
-                        log.debug(f"钱包 {wallet_address}: 已同步到最新")
-                        break
-
-                    # 打印活动摘要信息
-                    self._log_activities(wallet_address, activities)
-
-                    # 将活动推送到消息队列
-                    self.activity_queue.enqueue(wallet_address, activities)
-                    total_activities += len(activities)
-
-                    # 更新检查点为本批次最新的活动时间
-                    latest_timestamp = self._get_latest_timestamp(activities)
-                    if latest_timestamp:
-                        checkpoint = latest_timestamp
-                        log.debug(f"钱包 {wallet_address}: 更新检查点为 {checkpoint}")
-
-                    # 如果返回数据少于 batch_size，说明已到达最新
-                    if len(activities) < self.batch_size:
-                        log.debug(f"钱包 {wallet_address}: 已追上最新活动（本批次 {len(activities)} < {self.batch_size}）")
-                        break
-
-                    # 更新 offset 用于下一次分页
-                    offset += len(activities)
+                # Update checkpoint to latest activity timestamp
+                if updated_checkpoint:
+                    checkpoint = updated_checkpoint
 
                 if total_activities > 0:
-                    log.info(f"钱包 {wallet_address}: 本轮共发现 {total_activities} 条新活动")
+                    log.info(
+                        f"Wallet {wallet_address}: Found {total_activities} new "
+                        f"activity(ies) this round"
+                    )
                 else:
-                    log.debug(f"钱包 {wallet_address}: 没有新活动")
+                    log.debug(f"Wallet {wallet_address}: No new activities")
 
             except Exception as e:
-                log.error(f"监控钱包 {wallet_address} 时出错: {e}", exc_info=True)
+                log.error(f"Error monitoring wallet {wallet_address}: {e}", exc_info=True)
 
-            # 等待下一次轮询
+            # Wait for next poll
             self.stop_event.wait(self.poll_interval)
 
-    def _get_latest_timestamp(self, activities: list) -> Optional[datetime]:
+    def _fetch_and_publish_activities(
+        self,
+        wallet_address: str,
+        checkpoint: datetime
+    ) -> tuple[int, Optional[datetime]]:
         """
-        从活动列表中获取最新的时间戳
+        Fetch activities from API and publish to queue.
 
         Args:
-            activities: 活动对象列表
+            wallet_address: Wallet address to fetch activities for
+            checkpoint: Start time for fetching activities
 
         Returns:
-            最新的时间戳，如果无法解析则返回 None
+            Tuple of (total_activities_count, updated_checkpoint)
+            - total_activities_count: Total number of activities fetched
+            - updated_checkpoint: Latest activity timestamp (or None if no activities)
         """
-        if not activities:
-            return None
+        total_activities = 0
+        offset = 0
+        latest_checkpoint = None
 
-        try:
-            timestamps = []
-            for activity in activities:
-                ts = getattr(activity, 'timestamp', None)
-                if ts:
-                    parsed_ts = self._parse_timestamp(ts)
-                    if parsed_ts:
-                        timestamps.append(parsed_ts)
+        # Paginated fetch
+        while True:
+            # Set end time to current time + 1 hour to prevent missing data
+            current_time = datetime.now(TIMEZONE_UTC8)
+            end_time = current_time + timedelta(hours=1)
 
-            return max(timestamps) if timestamps else None
-        except Exception as e:
-            log.warning(f"获取最新时间戳时出错: {e}")
-            return None
+            # Build request parameters - fetch all activity types after checkpoint
+            params = {
+                "user": wallet_address,
+                "start": checkpoint,  # Query start time (checkpoint)
+                "end": end_time,      # Query end time (current time + 1 hour)
+                "limit": self.batch_size,
+                "offset": offset,
+                "sort_by": "TIMESTAMP",
+                "sort_direction": "ASC"  # Sort old to new for checkpoint updates
+            }
+            # Don't specify 'type' parameter to fetch all activity types
+            # (TRADE, SPLIT, MERGE, REDEEM, REWARD, CONVERSION)
 
-    def _log_activities(self, wallet_address: str, activities: list):
-        """
-        打印活动摘要信息
+            # Fetch a batch of activities
+            activities = self.data_client.get_activity(**params)
 
-        Args:
-            wallet_address: 钱包地址
-            activities: 活动列表
-        """
-        for activity in activities:
-            # 提取基本信息
-            activity_type = getattr(activity, 'type', 'N/A')
-            condition_id = getattr(activity, 'condition_id', 'N/A')
-            user_name = getattr(activity, 'name', None)  # 用户名称
-            market_title = getattr(activity, 'title', 'N/A')
-            outcome = getattr(activity, 'outcome', 'N/A')
-            side = getattr(activity, 'side', 'N/A')
-            event_slug = getattr(activity, 'event_slug', None)
+            # If no data, exit pagination loop
+            if not activities:
+                log.debug(f"Wallet {wallet_address}: Synced to latest")
+                break
 
-            # 提取金额信息
-            size = getattr(activity, 'size', 0)
-            price = getattr(activity, 'price', 0)
-            cash_amount = getattr(activity, 'cash_amount', 0)
+            # Log activity summary
+            log_activities(wallet_address, activities)
 
-            # 如果 cash_amount 为 0，用 size × price 计算
-            if cash_amount == 0 and size and price:
-                cash_amount = float(size) * float(price)
+            # Push activities to message queue
+            self.activity_queue.enqueue(wallet_address, activities)
+            total_activities += len(activities)
 
-            # 构建市场链接
-            if event_slug:
-                market_link = f"https://polymarket.com/event/{event_slug}"
-            else:
-                market_link = "N/A"
+            # Update checkpoint to the latest activity timestamp in this batch
+            latest_timestamp = get_latest_timestamp(activities)
+            if latest_timestamp:
+                latest_checkpoint = latest_timestamp
+                log.debug(f"Wallet {wallet_address}: Updated checkpoint to {latest_checkpoint}")
 
-            # 提取时间戳并转换为东八区
-            timestamp_raw = getattr(activity, 'timestamp', None)
-            if timestamp_raw:
-                try:
-                    if isinstance(timestamp_raw, datetime):
-                        timestamp = timestamp_raw.astimezone(TIMEZONE_UTC8)
-                    elif isinstance(timestamp_raw, str):
-                        dt = datetime.fromisoformat(timestamp_raw.replace('Z', '+00:00'))
-                        timestamp = dt.astimezone(TIMEZONE_UTC8)
-                    elif isinstance(timestamp_raw, (int, float)):
-                        dt = datetime.fromtimestamp(timestamp_raw, tz=timezone.utc)
-                        timestamp = dt.astimezone(TIMEZONE_UTC8)
-                    else:
-                        timestamp = 'N/A'
-                except Exception:
-                    timestamp = 'N/A'
-            else:
-                timestamp = 'N/A'
+            # If returned data < batch_size, we've reached the latest
+            if len(activities) < self.batch_size:
+                log.debug(
+                    f"Wallet {wallet_address}: Caught up to latest activities "
+                    f"(this batch {len(activities)} < {self.batch_size})"
+                )
+                break
 
-            # 打印活动摘要（块状格式）
-            wallet_display = f"{wallet_address} ({user_name})" if user_name else wallet_address
+            # Update offset for next page
+            offset += len(activities)
 
-            log.info(f"╔════════════════════════════════════════════════════╗")
-            log.info(f"║ 钱包: {wallet_display}")
-            log.info(f"║ 类型: {activity_type} {side}")
-            log.info(f"║ 市场: {market_title}")
-            log.info(f"║ condition_id: {condition_id}")
-            log.info(f"║ 结果: {outcome}")
-            log.info(f"║ 数量: {float(size):.4f} | 单价: ${float(price):.4f} | 总金额: ${cash_amount:.2f}")
-            log.info(f"║ 时间: {timestamp}")
-            log.info(f"║ 链接: {market_link}")
-            log.info(f"╚════════════════════════════════════════════════════╝")
-
-    @staticmethod
-    def _parse_timestamp(ts) -> Optional[datetime]:
-        """
-        解析时间戳为 datetime 对象
-
-        Args:
-            ts: 时间戳（可以是 datetime、字符串或数字）
-
-        Returns:
-            解析后的 datetime 对象，失败则返回 None
-        """
-        try:
-            if isinstance(ts, datetime):
-                return ts
-            elif isinstance(ts, str):
-                # 尝试解析 ISO 格式
-                return datetime.fromisoformat(ts.replace('Z', '+00:00'))
-            elif isinstance(ts, (int, float)):
-                # Unix 时间戳
-                return datetime.fromtimestamp(ts)
-        except Exception as e:
-            log.warning(f"解析时间戳失败: {ts}, 错误: {e}")
-        return None
+        return total_activities, latest_checkpoint

@@ -1,8 +1,12 @@
+"""
+Main entry point for Polymarket copy trading bot.
+
+Initializes monitoring and copy trading components based on configuration.
+"""
+
 import logging
 import signal
 import sys
-from datetime import datetime, timezone, timedelta
-from typing import List
 
 from src.config_loader import load_config
 from src.logger import setup_logger
@@ -10,19 +14,16 @@ from src.wallet_monitor import WalletMonitor
 from src.in_memory_activity_queue import InMemoryActivityQueue
 from src.copy_trader import CopyTrader
 
-# 定义东八区时区（UTC+8）
-TIMEZONE_UTC8 = timezone(timedelta(hours=8))
-
 
 def create_activity_queue(config: dict):
     """
-    根据配置创建活动队列实例
+    Create activity queue instance based on configuration.
 
     Args:
-        config: 配置字典
+        config: Configuration dictionary
 
     Returns:
-        ActivityQueue 实例
+        ActivityQueue instance
     """
     queue_config = config.get('queue', {})
     queue_type = queue_config.get('type', 'memory')
@@ -32,29 +33,29 @@ def create_activity_queue(config: dict):
         max_workers = memory_config.get('max_workers', 10)
         return InMemoryActivityQueue(max_workers=max_workers)
     elif queue_type == 'rabbitmq':
-        # TODO: 实现 RabbitMQ 队列
-        raise NotImplementedError("RabbitMQ 队列尚未实现")
+        # TODO: Implement RabbitMQ queue
+        raise NotImplementedError("RabbitMQ queue not yet implemented")
     else:
-        raise ValueError(f"不支持的队列类型: {queue_type}")
+        raise ValueError(f"Unsupported queue type: {queue_type}")
 
 
 def main():
-    """程序入口"""
+    """Program entry point."""
     try:
-        # 加载配置
+        # Load configuration
         config = load_config("config.yaml")
 
-        # 配置日志
+        # Configure logging
         log_config = config.get('logging', {})
         log_dir = log_config.get('log_dir', 'logs')
         log_level_str = log_config.get('level', 'INFO')
         log_level = getattr(logging, log_level_str, logging.INFO)
 
-        # 重新初始化日志
+        # Reinitialize logger
         log = setup_logger(log_dir=log_dir, level=log_level)
-        log.info("正在加载配置文件...")
+        log.info("Loading configuration file...")
 
-        # 提取配置
+        # Extract configuration
         monitoring_config = config['monitoring']
         wallets = monitoring_config['wallets']
         poll_interval = monitoring_config['poll_interval_seconds']
@@ -62,20 +63,20 @@ def main():
         api_config = config.get('polymarket_api', {})
         proxy = api_config.get('proxy')
         timeout = api_config.get('timeout', 30.0)
-        
-        # 提取 Polygon RPC 配置
+
+        # Extract Polygon RPC configuration
         polygon_rpc_config = config.get('polygon_rpc', {})
 
-        # 创建活动队列
+        # Create activity queue
         activity_queue = create_activity_queue(config)
-        log.info(f"活动队列已创建: {type(activity_queue).__name__}")
+        log.info(f"Activity queue created: {type(activity_queue).__name__}")
 
-        # 初始化复制交易器（如果配置了用户钱包）
+        # Initialize copy traders (if user wallets configured)
         copy_traders = []
         user_wallets = config.get('user_wallets', [])
 
         if user_wallets:
-            log.info(f"检测到 {len(user_wallets)} 个用户钱包配置，正在初始化复制交易器...")
+            log.info(f"Detected {len(user_wallets)} user wallet config(s), initializing copy traders...")
 
             for wallet_config in user_wallets:
                 try:
@@ -86,21 +87,21 @@ def main():
                     )
                     copy_traders.append(trader)
 
-                    # 为每个目标钱包启动复制交易
+                    # Start copy trading for each target wallet
                     for target_wallet in wallets:
                         trader.run(target_wallet)
 
-                    log.info(f"复制交易器 '{wallet_config['name']}' 已启动")
+                    log.info(f"Copy trader '{wallet_config['name']}' started")
 
                 except Exception as e:
                     log.error(
-                        f"初始化复制交易器 '{wallet_config.get('name', 'unknown')}' 失败: {e}",
+                        f"Failed to initialize copy trader '{wallet_config.get('name', 'unknown')}': {e}",
                         exc_info=True
                     )
         else:
-            log.info("未配置用户钱包，仅运行监控模式（活动将在 WalletMonitor 中打印）")
+            log.info("No user wallets configured, running in monitoring mode only (activities will be printed by WalletMonitor)")
 
-        # 创建监控器
+        # Create monitor
         monitor = WalletMonitor(
             wallets=wallets,
             poll_interval=poll_interval,
@@ -110,11 +111,11 @@ def main():
             timeout=timeout
         )
 
-        # 设置信号处理,支持优雅退出
+        # Set up signal handler for graceful shutdown
         def signal_handler(sig, frame):
-            log.info("收到退出信号,正在关闭...")
+            log.info("Received exit signal, shutting down...")
 
-            # 打印复制交易统计
+            # Print copy trading statistics
             for trader in copy_traders:
                 trader.print_stats()
 
@@ -126,19 +127,19 @@ def main():
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
-        # 启动监控
+        # Start monitoring
         monitor.start()
 
-        # 保持主线程运行
-        log.info("监控运行中,按 Ctrl+C 退出...")
+        # Keep main thread running
+        log.info("Monitoring running, press Ctrl+C to exit...")
         while True:
             signal.pause() if hasattr(signal, 'pause') else monitor.stop_event.wait(3600)
 
     except FileNotFoundError as e:
-        log.error(f"配置文件错误: {e}")
+        log.error(f"Configuration file error: {e}")
         sys.exit(1)
     except Exception as e:
-        log.error(f"程序启动失败: {e}", exc_info=True)
+        log.error(f"Program startup failed: {e}", exc_info=True)
         sys.exit(1)
 
 

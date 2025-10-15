@@ -1,12 +1,14 @@
+"""Database models for trade and checkpoint storage."""
+
 from peewee import Model, CharField, DecimalField, DateTimeField
 from playhouse.postgres_ext import PostgresqlExtDatabase
 
-# 数据库实例将在 DatabaseHandler 中初始化
+# Database instance will be initialized in DatabaseHandler
 db = PostgresqlExtDatabase(None)
 
 
 class Trade(Model):
-    """交易数据模型"""
+    """Trade data model."""
     transaction_hash = CharField(primary_key=True, max_length=255)
     wallet_address = CharField(max_length=255, index=True)
     market_id = CharField(max_length=255, index=True)
@@ -21,7 +23,7 @@ class Trade(Model):
 
 
 class WalletCheckpoint(Model):
-    """钱包同步检查点模型"""
+    """Wallet sync checkpoint model."""
     wallet_address = CharField(primary_key=True, max_length=255)
     last_synced_timestamp = DateTimeField(null=True, index=True)
     updated_at = DateTimeField(index=True)

@@ -3,7 +3,7 @@ database:
 
 logging:
   log_dir: "logs"  # 日志目录,相对于项目根目录
-  level: "DEBUG"  # 日志级别: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"  # 日志级别: DEBUG, INFO, WARNING, ERROR
 
 polymarket_api:
   proxy: "http://localhost:7891"  # 可选,留空则不使用代理
