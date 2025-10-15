@@ -181,6 +181,7 @@ class WalletMonitor:
         for activity in activities:
             # 提取基本信息
             activity_type = getattr(activity, 'type', 'N/A')
+            condition_id = getattr(activity, 'condition_id', 'N/A')
             user_name = getattr(activity, 'name', None)  # 用户名称
             market_title = getattr(activity, 'title', 'N/A')
             outcome = getattr(activity, 'outcome', 'N/A')
@@ -228,6 +229,7 @@ class WalletMonitor:
             log.info(f"║ 钱包: {wallet_display}")
             log.info(f"║ 类型: {activity_type} {side}")
             log.info(f"║ 市场: {market_title}")
+            log.info(f"║ condition_id: {condition_id}")
             log.info(f"║ 结果: {outcome}")
             log.info(f"║ 数量: {float(size):.4f} | 单价: ${float(price):.4f} | 总金额: ${cash_amount:.2f}")
             log.info(f"║ 时间: {timestamp}")

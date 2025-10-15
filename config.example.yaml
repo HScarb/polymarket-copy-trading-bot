@@ -69,6 +69,11 @@ user_wallets:
       # 最小触发金额（USDC），目标钱包交易金额低于此值时不触发复制
       min_trigger_amount: 10
 
+      # 最小复制金额（USDC），我方复制交易的单笔金额下限
+      # 如果计算出的金额低于此值，则使用此金额进行交易
+      # 设为 0 表示不限制
+      min_trade_amount: 0
+
       # 最大复制金额（USDC），我方复制交易的单笔金额上限
       # 设为 0 表示不限制
       max_trade_amount: 100

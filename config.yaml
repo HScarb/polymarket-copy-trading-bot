@@ -11,8 +11,8 @@ polymarket_api:
 
 monitoring:
   wallets:
-#    - "0x55be7aa03ecfbe37aa5460db791205f7ac9ddca3"
-    - "0xd218e474776403a330142299f7796e8ba32eb5c9"
+    - "0x55be7aa03ecfbe37aa5460db791205f7ac9ddca3"
+#    - "0xd218e474776403a330142299f7796e8ba32eb5c9"
   poll_interval_seconds: 5
   batch_size: 100  # 每次API调用获取的最大交易数量
 
@@ -35,16 +35,21 @@ user_wallets:
     address: "0x7c194708d0b203b00c57c001cda31eeb8e961aa7"      # EOA 钱包地址
     proxy_address: "0x2173D82638Bd32328cc3A1118408A2a577ea2869"  # Polymarket 代理合约地址（funder）
     private_key_env: "SCARB4_PRIVATE_KEY"  # 从环境变量读取私钥
-    signature_type: 2  # 2=浏览器钱包代理模式, 0=标准EOA模式
+    signature_type: 2  # 1=Polymarket代理模式(私钥签名), 2=浏览器钱包代理模式, 0=标准EOA模式
 
     # 复制交易策略
     copy_strategy:
       # 最小触发金额（USDC），目标钱包交易金额低于此值时不触发复制
-      min_trigger_amount: 0
+      min_trigger_amount: 50
+
+      # 最小复制金额（USDC），我方复制交易的单笔金额下限
+      # 如果计算出的金额低于此值，则使用此金额进行交易
+      # 设为 0 表示不限制
+      min_trade_amount: 0
 
       # 最大复制金额（USDC），我方复制交易的单笔金额上限
       # 设为 0 表示不限制
-      max_trade_amount: 5
+      max_trade_amount: 100
 
       # 订单类型: "market" (市价单) 或 "limit" (限价单)
       order_type: "limit"
@@ -58,7 +63,7 @@ user_wallets:
       # Scale 模式配置
       # 按目标交易金额的固定百分比跟单
       # 例如: scale_percentage=10.0 表示目标交易100 USDC，我跟10 USDC
-      scale_percentage: 100
+      scale_percentage: 1
 
       # Allocate 模式配置（暂未完全实现）
       # 按目标钱包资产配置比例跟单

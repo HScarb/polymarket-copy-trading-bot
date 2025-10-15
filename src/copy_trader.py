@@ -429,7 +429,7 @@ class CopyTrader:
             target_wallet: 目标钱包地址
 
         Returns:
-            计算后的交易金额（USDC），已应用最大金额限制
+            计算后的交易金额（USDC），已应用最小和最大金额限制
         """
         mode = self.strategy_config['copy_mode']
         target_value = self._get_trade_value(activity)
@@ -451,6 +451,15 @@ class CopyTrader:
 
         else:
             raise ValueError(f"不支持的复制模式: {mode}")
+
+        # 应用最小金额限制
+        min_amount = self.strategy_config.get('min_trade_amount', 0)
+        if min_amount > 0 and calculated_size < min_amount:
+            log.info(
+                f"[{self.name}] 应用最小金额限制: "
+                f"${calculated_size:.2f} → ${min_amount:.2f}"
+            )
+            calculated_size = min_amount
 
         # 应用最大金额限制
         max_amount = self.strategy_config.get('max_trade_amount', 0)
@@ -674,8 +683,22 @@ class CopyTrader:
                 side=side
             )
 
+            log.info(
+                f"[{self.name}] 创建订单参数 | "
+                f"token_id: {token_id} | "
+                f"方向: {side} | "
+                f"价格: {price} | "
+                f"数量: {size} | "
+                f"signature_type: {self.signature_type}"
+            )
+
             # 创建签名订单
             signed_order = self.clob_client.create_order(order_args, PartialCreateOrderOptions(neg_risk=True))
+
+            # 打印签名订单详情（用于调试）
+            import json
+            log.info(f"[{self.name}] 签名订单内容:")
+            log.info(json.dumps(signed_order, indent=2, default=str))
 
             # 提交订单（注意：post_order 的第二个参数对限价单应该使用 OrderType.GTD）
             response = self.clob_client.post_order(signed_order)
