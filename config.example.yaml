@@ -8,7 +8,13 @@ database:
 # 日志配置
 logging:
   log_dir: "logs"  # 日志目录，相对于项目根目录
+  log_filename: "polymarket_bot"  # 日志文件名(不含扩展名)，留空则使用日期格式(YYYY-MM-DD)
   level: "INFO"    # 日志级别: DEBUG, INFO, WARNING, ERROR
+  # 说明:
+  #   - 日志会按天自动滚动，保留最近30天
+  #   - 如果指定 log_filename，文件名为: log_filename.log
+  #   - 如果不指定 log_filename，文件名为: YYYY-MM-DD.log
+  #   - 滚动后的旧日志会带上日期后缀，例如: polymarket_bot.log.2025-10-15
 
 # Polymarket API 配置
 polymarket_api:

@@ -48,11 +48,12 @@ def main():
         # Configure logging
         log_config = config.get('logging', {})
         log_dir = log_config.get('log_dir', 'logs')
+        log_filename = log_config.get('log_filename')  # Optional, None means use date format
         log_level_str = log_config.get('level', 'INFO')
         log_level = getattr(logging, log_level_str, logging.INFO)
 
         # Reinitialize logger
-        log = setup_logger(log_dir=log_dir, level=log_level)
+        log = setup_logger(log_dir=log_dir, log_filename=log_filename, level=log_level)
         log.info("Loading configuration file...")
 
         # Extract configuration

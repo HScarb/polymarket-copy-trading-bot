@@ -3,6 +3,7 @@ database:
 
 logging:
   log_dir: "logs"  # 日志目录,相对于项目根目录
+  log_filename: "polymarket_bot"  # 日志文件名(不含扩展名),留空则使用日期格式(YYYY-MM-DD)
   level: "INFO"  # 日志级别: DEBUG, INFO, WARNING, ERROR
 
 polymarket_api:
