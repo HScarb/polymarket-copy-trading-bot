@@ -62,6 +62,9 @@ def main():
         api_config = config.get('polymarket_api', {})
         proxy = api_config.get('proxy')
         timeout = api_config.get('timeout', 30.0)
+        
+        # 提取 Polygon RPC 配置
+        polygon_rpc_config = config.get('polygon_rpc', {})
 
         # 创建活动队列
         activity_queue = create_activity_queue(config)
@@ -78,7 +81,8 @@ def main():
                 try:
                     trader = CopyTrader(
                         wallet_config=wallet_config,
-                        activity_queue=activity_queue
+                        activity_queue=activity_queue,
+                        polygon_rpc_config=polygon_rpc_config
                     )
                     copy_traders.append(trader)
 

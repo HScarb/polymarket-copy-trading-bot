@@ -4,10 +4,13 @@
 提供自动化的复制交易功能，监听目标钱包活动并根据配置策略执行交易。
 """
 
+import os
 import time
+import warnings
 from functools import partial
 from typing import List, Optional, Dict, Any
 
+import requests
 from web3 import Web3
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType, BalanceAllowanceParams
@@ -15,6 +18,12 @@ from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType, Bal
 from src.activity_queue import ActivityQueue
 from src.config_loader import load_private_key
 from src.logger import log
+
+# Suppress SSL verification warnings when using corporate proxy
+warnings.filterwarnings('ignore', message='Unverified HTTPS request')
+# Also suppress urllib3 warnings
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 # ==================== 合约地址和配置 ====================
@@ -121,7 +130,8 @@ class CopyTrader:
         wallet_config: dict,
         activity_queue: ActivityQueue,
         chain_id: int = 137,  # Polygon mainnet
-        host: str = "https://clob.polymarket.com"
+        host: str = "https://clob.polymarket.com",
+        polygon_rpc_config: Optional[Dict] = None
     ):
         """
         初始化复制交易器
@@ -131,6 +141,7 @@ class CopyTrader:
             activity_queue: 活动队列实例
             chain_id: 区块链ID，默认 137 (Polygon mainnet)
             host: CLOB API 主机地址
+            polygon_rpc_config: Polygon RPC 配置（包含 url 和 proxy）
         """
         self.name = wallet_config['name']
         self.address = wallet_config['address']
@@ -143,7 +154,46 @@ class CopyTrader:
 
         # 初始化 Web3 客户端（用于代币授权）
         try:
-            self.w3 = Web3(Web3.HTTPProvider(POLYGON_RPC_URL))
+            # 从配置获取 RPC URL 和代理设置
+            rpc_url = POLYGON_RPC_URL
+            proxy = None
+            verify_ssl = True  # 默认验证 SSL
+            
+            if polygon_rpc_config:
+                rpc_url = polygon_rpc_config.get('url', POLYGON_RPC_URL)
+                proxy = polygon_rpc_config.get('proxy')
+                verify_ssl = polygon_rpc_config.get('verify_ssl', True)
+                # 也可以从环境变量读取代理
+                if not proxy:
+                    proxy = os.environ.get('POLYGON_RPC_PROXY')
+            else:
+                # 尝试从环境变量读取代理
+                proxy = os.environ.get('POLYGON_RPC_PROXY')
+            
+            # 也可以从环境变量读取 SSL 验证设置
+            if os.environ.get('POLYGON_RPC_VERIFY_SSL', '').lower() in ('false', '0'):
+                verify_ssl = False
+            elif os.environ.get('POLYGON_RPC_VERIFY_SSL', '').lower() in ('true', '1'):
+                verify_ssl = True
+            
+            # 创建自定义 Session 对象
+            session = requests.Session()
+            session.verify = verify_ssl
+            
+            # 配置 HTTPProvider 的请求参数
+            request_kwargs = {'timeout': 60 if proxy else 30}
+            
+            if proxy:
+                session.proxies = {
+                    'http': proxy,
+                    'https': proxy
+                }
+                log.info(f"[{self.name}] Using proxy for Polygon RPC: {proxy} (SSL verify: {verify_ssl})")
+            
+            # 创建 Web3 实例，传入自定义 session
+            provider = Web3.HTTPProvider(rpc_url, request_kwargs=request_kwargs, session=session)
+            self.w3 = Web3(provider)
+            
             if not self.w3.is_connected():
                 log.warning(f"[{self.name}] 无法连接到 Polygon 网络，代币授权功能可能不可用")
         except Exception as e:
