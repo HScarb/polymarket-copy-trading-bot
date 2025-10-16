@@ -20,8 +20,7 @@ def test_monitor():
         poll_interval=300,  # 5分钟轮询一次（测试时只运行一轮）
         db_url=db_url,
         batch_size=batch_size,
-        proxy=config.get('polymarket_api', {}).get('proxy'),
-        timeout=30.0
+        proxy=config.get('polymarket_api', {}).get('proxy')
     )
 
     # 启动监控

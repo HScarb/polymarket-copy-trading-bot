@@ -18,14 +18,14 @@ logging:
 
 # Polymarket API 配置
 polymarket_api:
-  proxy: "http://localhost:7891"  # 可选，留空则不使用代理
-  timeout: 30.0
+#  proxy: "http://localhost:7891"  # 可选，留空则不使用代理
+#  verify_ssl: false  # SSL 证书验证
 
 # Polygon RPC 配置
 polygon_rpc:
   url: "https://polygon-rpc.com"
-  proxy: "http://localhost:7891"  # 可选，留空则不使用代理。用于 Web3 连接
-  verify_ssl: false  # SSL 证书验证。公司代理环境设为 false，其他环境建议设为 true
+#  proxy: "http://localhost:7891"  # 可选，留空则不使用代理。用于 Web3 连接
+#  verify_ssl: false  # SSL 证书验证
 
 # 监控配置
 monitoring:

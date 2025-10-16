@@ -9,6 +9,7 @@ import time
 from functools import partial
 from typing import List, Optional, Dict, Any
 
+import requests
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import BalanceAllowanceParams
 
@@ -45,6 +46,10 @@ class CopyTrader:
     3. Execute trades using py-clob-client
     4. Provide error handling and retry mechanisms
     """
+    
+    # Class-level flag to track if SSL verification has been disabled globally
+    _ssl_verification_patched = False
+    _original_request_method = None
 
     def __init__(
         self,
@@ -52,7 +57,8 @@ class CopyTrader:
         activity_queue: ActivityQueue,
         chain_id: int = 137,  # Polygon mainnet
         host: str = "https://clob.polymarket.com",
-        polygon_rpc_config: Optional[Dict] = None
+        polygon_rpc_config: Optional[Dict] = None,
+        verify_ssl: bool = True
     ):
         """
         Initialize copy trader.
@@ -63,6 +69,7 @@ class CopyTrader:
             chain_id: Blockchain ID, default 137 (Polygon mainnet)
             host: CLOB API host address
             polygon_rpc_config: Polygon RPC config (includes url and proxy)
+            verify_ssl: Whether to verify SSL certificates (default: True)
         """
         self.name = wallet_config['name']
         self.address = wallet_config['address']
@@ -95,7 +102,7 @@ class CopyTrader:
             log.info(f"[{self.name}] Proxy mode skips on-chain token approval (managed by Polymarket)")
 
         # Initialize CLOB client
-        self.clob_client = self._init_clob_client(host, chain_id, private_key)
+        self.clob_client = self._init_clob_client(host, chain_id, private_key, verify_ssl)
 
         # Initialize order executor
         self.order_executor = OrderExecutor(
@@ -120,8 +127,8 @@ class CopyTrader:
             'trades_failed': 0
         }
 
-    def _init_clob_client(self, host: str, chain_id: int, private_key: str) -> ClobClient:
-        """Initialize CLOB client with appropriate signature type."""
+    def _init_clob_client(self, host: str, chain_id: int, private_key: str, verify_ssl: bool = True) -> ClobClient:
+        """Initialize CLOB client with appropriate signature type and SSL verification setting."""
         try:
             client_params = {
                 'host': host,
@@ -145,6 +152,31 @@ class CopyTrader:
                 )
             else:
                 log.info(f"[{self.name}] Using EOA direct signing mode")
+
+            # Disable SSL verification globally if configured (for corporate proxy environments)
+            if not verify_ssl and not CopyTrader._ssl_verification_patched:
+                log.info(f"[{self.name}] Disabling SSL verification globally for CLOB client")
+                
+                # Suppress SSL warnings
+                try:
+                    import urllib3
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                except ImportError:
+                    pass
+                
+                # Monkey patch requests to disable SSL verification globally
+                # This ensures all requests from ClobClient will have SSL verification disabled
+                CopyTrader._original_request_method = requests.Session.request
+                
+                def patched_request(self, method, url, **kwargs):
+                    kwargs['verify'] = False
+                    return CopyTrader._original_request_method(self, method, url, **kwargs)
+                
+                requests.Session.request = patched_request
+                CopyTrader._ssl_verification_patched = True
+                log.info(f"[{self.name}] Patched requests.Session to disable SSL verification globally")
+            elif not verify_ssl:
+                log.debug(f"[{self.name}] SSL verification already disabled globally")
 
             clob_client = ClobClient(**client_params)
 
@@ -443,6 +475,14 @@ class CopyTrader:
             else:
                 raise OrderExecutionError(str(e))
 
+    @classmethod
+    def restore_ssl_verification(cls):
+        """Restore original SSL verification behavior (for cleanup/testing)."""
+        if cls._ssl_verification_patched and cls._original_request_method:
+            requests.Session.request = cls._original_request_method
+            cls._ssl_verification_patched = False
+            log.info("Restored original SSL verification behavior")
+    
     def get_stats(self) -> Dict[str, int]:
         """
         Get trading statistics.

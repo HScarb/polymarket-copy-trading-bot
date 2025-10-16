@@ -34,7 +34,7 @@ class WalletMonitor:
         activity_queue: ActivityQueue,
         batch_size: int = 500,
         proxy: Optional[str] = None,
-        timeout: float = 30.0
+        verify_ssl: bool = True
     ):
         """
         Initialize monitor with wallets and configuration.
@@ -46,6 +46,7 @@ class WalletMonitor:
             batch_size: Maximum activities to fetch per request
             proxy: Proxy server address (optional)
             timeout: API timeout in seconds
+            verify_ssl: Whether to verify SSL certificates (default: True)
         """
         self.wallets = wallets
         self.poll_interval = poll_interval
@@ -54,7 +55,7 @@ class WalletMonitor:
         self.data_client = PolymarketDataClient()
 
         # Configure API client
-        self.data_client.client = httpx.Client(proxy=proxy) if proxy else httpx.Client()
+        self.data_client.client = httpx.Client(proxy=proxy, verify=verify_ssl) if proxy else httpx.Client(verify=verify_ssl)
 
         self.stop_event = threading.Event()
         self.executor: Optional[ThreadPoolExecutor] = None

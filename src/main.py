@@ -64,6 +64,7 @@ def main():
         api_config = config.get('polymarket_api', {})
         proxy = api_config.get('proxy')
         timeout = api_config.get('timeout', 30.0)
+        verify_ssl = api_config.get('verify_ssl', True)
 
         # Extract Polygon RPC configuration
         polygon_rpc_config = config.get('polygon_rpc', {})
@@ -84,7 +85,8 @@ def main():
                     trader = CopyTrader(
                         wallet_config=wallet_config,
                         activity_queue=activity_queue,
-                        polygon_rpc_config=polygon_rpc_config
+                        polygon_rpc_config=polygon_rpc_config,
+                        verify_ssl=verify_ssl
                     )
                     copy_traders.append(trader)
 
@@ -109,7 +111,7 @@ def main():
             activity_queue=activity_queue,
             batch_size=batch_size,
             proxy=proxy,
-            timeout=timeout
+            verify_ssl=verify_ssl
         )
 
         # Set up signal handler for graceful shutdown
